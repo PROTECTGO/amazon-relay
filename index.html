@@ -153,6 +153,7 @@ body{margin:0;background:var(--pg-bg);color:var(--pg-txt);font-family:var(--pg-f
     <a data-v="cobros" onclick="nav('cobros')">💵 Cobros</a>
     <a data-v="servicios" onclick="nav('servicios')">🛠 Servicios</a>
     <a data-v="invoices" onclick="nav('invoices')">🧾 Invoices</a>
+    <a data-v="reportes" onclick="nav('reportes')">📊 Reportes</a>
     <div class="pg-foot">
       Amazon Relay · ProtectGo<br>
       <span id="footUser" style="color:var(--pg-mint)"></span><br>
@@ -169,7 +170,7 @@ body{margin:0;background:var(--pg-bg);color:var(--pg-txt);font-family:var(--pg-f
 const SB_URL='https://bwqzypuiqgxzsrtsueab.supabase.co';
 const SB_KEY='sb_publishable_VbA94M3mF-Z6kgtPnda-cQ_diKF8L49';
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
-let ME=null, CLIENTES=[], SERVICIOS=[], COBROS=[], INVOICES=[], LOADS=[], VIEW='resumen', DETALLE=null;
+let ME=null, CLIENTES=[], SERVICIOS=[], COBROS=[], INVOICES=[], LOADS=[], REGLAS=[], REPARTOS=[], DIRECTORIO=null, VIEW='resumen', DETALLE=null, REP_PERIODO='mes';
 
 const $=id=>document.getElementById(id);
 const fmt$=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -200,14 +201,16 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!$('loginView').clas
 
 /* ---------- DATA ---------- */
 async function loadAll(){
-  const [c,s,co,inv,ld]=await Promise.all([
+  const [c,s,co,inv,ld,rg,rp]=await Promise.all([
     sb.from('amazon_clientes').select('*').order('empresa'),
     sb.from('amazon_servicios').select('*').order('orden'),
     sb.from('amazon_cobros').select('*').order('created_at',{ascending:false}),
     sb.from('amazon_invoices').select('*').order('numero_seq',{ascending:false}),
     sb.from('amazon_loads').select('*').order('created_at',{ascending:false}),
+    sb.from('amazon_reglas_reparto').select('*').order('tipo'),
+    sb.from('amazon_repartos').select('*').order('created_at',{ascending:false}),
   ]);
-  CLIENTES=c.data||[];SERVICIOS=s.data||[];COBROS=co.data||[];INVOICES=inv.data||[];LOADS=ld.data||[];
+  CLIENTES=c.data||[];SERVICIOS=s.data||[];COBROS=co.data||[];INVOICES=inv.data||[];LOADS=ld.data||[];REGLAS=rg.data||[];REPARTOS=rp.data||[];
 }
 async function evento(tipo,detalle,ids={}){
   await sb.from('amazon_eventos').insert({tipo,detalle,quien:ME.email,...ids});
@@ -228,7 +231,9 @@ function render(){
   else if(VIEW==='cobros') M.innerHTML=vCobros();
   else if(VIEW==='servicios') M.innerHTML=vServicios();
   else if(VIEW==='invoices') M.innerHTML=vInvoices();
+  else if(VIEW==='reportes') M.innerHTML=vReportes();
   if(VIEW==='loads') setupPasteZone();
+  if(VIEW==='clientes'&&!DETALLE) cargarDirectorio();
 }
 
 /* ---------- RESUMEN ---------- */
@@ -281,7 +286,8 @@ function vClientes(){
       </tbody></table>
     </div>
     <div class="pg-card">
-      <h2>Registrar cliente</h2><div class="h2sub">Solo llena Empresa, DOT y Contrato para registrar rápido — el resto es opcional y lo completas después.</div>
+      <h2>Registrar cliente</h2><div class="h2sub">Si el cliente ya existe en la agencia, escógelo en el directorio y los datos se llenan solos. Solo Empresa, DOT y Contrato son lo mínimo — el resto es opcional.</div>
+      <div class="field" style="background:#F2FBF8;border:1px dashed var(--pg-mint);border-radius:10px;padding:10px 12px"><label>🔎 Directorio de la agencia <span style="font-weight:400;text-transform:none">(clientes ya cotizados por los agentes)</span></label><select id="dirSel" onchange="dirAutofill()"><option value="">Cargando directorio…</option></select></div>
       <div class="field"><label>Empresa * <span style="font-weight:400;text-transform:none">(nombre tal cual en el correo)</span></label><input id="ncEmpresa" placeholder="Ej: EL POTRILLO TRANSPORTATION LLC"></div>
       <div class="frow2">
         <div class="field"><label>DOT #</label><input id="ncDot" placeholder="Ej: 4357113"></div>
@@ -364,6 +370,30 @@ async function agregarNota(id){
   await evento('nota',t,{cliente_id:id});toast('Nota guardada');abrirCliente(id);
 }
 
+/* ---------- DIRECTORIO DE LA AGENCIA ---------- */
+async function cargarDirectorio(){
+  if(DIRECTORIO===null){
+    const {data,error}=await sb.rpc('amazon_directorio');
+    if(error){DIRECTORIO=[];}else{DIRECTORIO=data||[];}
+  }
+  const sel=$('dirSel');if(!sel)return;
+  sel.innerHTML='<option value="">— Buscar en el directorio ('+DIRECTORIO.length+' clientes de la agencia) —</option>'+
+    DIRECTORIO.map((d,i)=>`<option value="${i}">${esc(d.empresa)}${d.dot?' · DOT '+esc(d.dot):''}</option>`).join('');
+}
+function dirAutofill(){
+  const i=$('dirSel').value;if(i==='')return;
+  const d=DIRECTORIO[i];if(!d)return;
+  $('ncEmpresa').value=d.empresa||'';
+  $('ncDot').value=d.dot||'';
+  $('ncMc').value=d.mc||'';
+  $('ncRep').value=d.dueno||'';
+  $('ncTel').value=d.telefono||'';
+  $('ncEmail').value=d.email||'';
+  const veh=(d.unidades||[]).map(u=>Array.isArray(u)?u.slice(0,4).map(x=>(''+(x??'')).trim()).filter(Boolean).join(' '):'').filter(Boolean);
+  $('ncNotas').value=[(d.direccion?'Dirección: '+d.direccion:''),(veh.length?'Vehículos ('+veh.length+'):\n- '+veh.join('\n- '):'')].filter(Boolean).join('\n');
+  toast('Datos traídos del directorio — revisa y registra');
+}
+
 /* ---------- COBROS ---------- */
 function rowCobro(c){
   const i=ESTADOS_COBRO.indexOf(c.estado);
@@ -435,6 +465,7 @@ async function avanzarCobro(id,estado){
   if(error) return toast('Error: '+error.message);
   const c=COBROS.find(x=>x.id===id);
   await evento('cambio_estado',`Cobro pasó a ${ESTADO_LBL[estado]}${transaccion?' · Trans #'+transaccion:''}`,{cliente_id:c?.cliente_id,cobro_id:id});
+  if(estado==='fondos_validados'&&c) await generarReparto(c);
   toast('Estado: '+ESTADO_LBL[estado]);await loadAll();
   if(DETALLE) abrirCliente(DETALLE); else render();
 }
@@ -560,6 +591,126 @@ async function generarDosier(loadId){
     </div>
     ${invRel?`<table class="dinv"><tr><th>Invoice asociado</th><th>Total</th><th>Estado</th></tr><tr><td>${esc(invRel.numero)}</td><td>${fmt$(invRel.total)}</td><td>${ESTADO_LBL[invRel.estado]}</td></tr></table>`:''}
     ${l.notas?`<div class="dbox" style="margin-top:14px"><b>Notas / soporte:</b> ${esc(l.notas)}</div>`:''}
+    <div class="dfoot"><b>ProtectGo Services</b> · +1 (210) 961-9194 · admin@protectgoservices.com<br>17685 Senior Rd, Unit 5, Von Ormy TX 78073-4279 · www.protectgoservices.com</div>
+  </div>`;
+  window.print();
+}
+
+/* ---------- REPARTOS / UTILIDADES ---------- */
+function calcReparto(monto,regla){
+  const r=regla||{operario_pct:0,operario_fijo:0,opex_pct:0,opex_fijo:0};
+  const operario=Number(r.operario_fijo)>0?Math.min(Number(r.operario_fijo),monto):Math.round(monto*Number(r.operario_pct))/100;
+  const opex=Number(r.opex_fijo)>0?Math.min(Number(r.opex_fijo),monto-operario):Math.round(monto*Number(r.opex_pct))/100;
+  const utilidad=Math.round((monto-operario-opex)*100)/100;
+  return {operario:Math.round(operario*100)/100,opex:Math.round(opex*100)/100,utilidad};
+}
+async function generarReparto(c){
+  const monto=Number(c.monto);
+  const regla=REGLAS.find(r=>r.tipo===(c.tipo==='semanal'?'semanal':'servicio'));
+  const x=calcReparto(monto,regla);
+  await sb.from('amazon_repartos').upsert({cobro_id:c.id,cliente_id:c.cliente_id,monto_bruto:monto,operario:x.operario,opex:x.opex,utilidad:x.utilidad,regla:regla?{tipo:regla.tipo,operario_pct:regla.operario_pct,operario_fijo:regla.operario_fijo,opex_pct:regla.opex_pct,opex_fijo:regla.opex_fijo}:null},{onConflict:'cobro_id'});
+}
+async function recalcRepartos(){
+  const validados=COBROS.filter(c=>['fondos_validados','pagado'].includes(c.estado));
+  let n=0;
+  for(const c of validados){await generarReparto(c);n++;}
+  toast(n+' cobros repartidos con la regla vigente');await loadAll();render();
+}
+async function guardarRegla(id){
+  const upd={operario_pct:parseFloat($('rg_op_'+id).value)||0,operario_fijo:parseFloat($('rg_of_'+id).value)||0,
+             opex_pct:parseFloat($('rg_xp_'+id).value)||0,opex_fijo:parseFloat($('rg_xf_'+id).value)||0,updated_at:new Date().toISOString()};
+  const {error}=await sb.from('amazon_reglas_reparto').update(upd).eq('id',id);
+  if(error) return toast('Error: '+error.message);
+  const r=REGLAS.find(x=>x.id===id);
+  await evento('nota',`Regla de reparto ${r?.tipo}: operario ${upd.operario_fijo>0?fmt$(upd.operario_fijo):upd.operario_pct+'%'} · OPEX ${upd.opex_fijo>0?fmt$(upd.opex_fijo):upd.opex_pct+'%'}`);
+  toast('Regla guardada — aplica a los próximos cobros validados');await loadAll();render();
+}
+function repPeriodo(p){REP_PERIODO=p;render();}
+function vReportes(){
+  const hoy=new Date();
+  const enPeriodo=r=>{
+    const d=new Date(r.created_at);
+    if(REP_PERIODO==='mes') return d.getMonth()===hoy.getMonth()&&d.getFullYear()===hoy.getFullYear();
+    if(REP_PERIODO==='anterior'){const a=new Date(hoy.getFullYear(),hoy.getMonth()-1,1);return d.getMonth()===a.getMonth()&&d.getFullYear()===a.getFullYear();}
+    if(REP_PERIODO==='semana'){const t=new Date();t.setDate(t.getDate()-7);return d>=t;}
+    return true;
+  };
+  const rep=REPARTOS.filter(enPeriodo);
+  const sum=k=>rep.reduce((a,r)=>a+Number(r[k]),0);
+  const bruto=sum('monto_bruto'),oper=sum('operario'),opex=sum('opex'),util=sum('utilidad');
+  const porCliente={};
+  rep.forEach(r=>{const k=r.cliente_id||'—';porCliente[k]=porCliente[k]||{n:0,bruto:0,operario:0,opex:0,utilidad:0};const p=porCliente[k];p.n++;p.bruto+=Number(r.monto_bruto);p.operario+=Number(r.operario);p.opex+=Number(r.opex);p.utilidad+=Number(r.utilidad);});
+  const filas=Object.entries(porCliente).sort((a,b)=>b[1].utilidad-a[1].utilidad);
+  const pendientes=COBROS.filter(c=>['fondos_validados','pagado'].includes(c.estado)&&!REPARTOS.find(r=>r.cobro_id===c.id)).length;
+  const pl=p=>`<span class="pg-pill ${REP_PERIODO===p?'fin':'n'}" style="cursor:pointer" onclick="repPeriodo('${p}')">`;
+  return `
+  <div class="pg-eyebrow">Utilidades · ProtectGo & Operyx</div><h1>Reportes</h1>
+  <div class="pg-sub">Cuánto entra, cuánto va a operarios, cuánto a OPEX y cuánto queda — total y por cliente. Se calcula solo con cada cobro validado.</div>
+  <div style="margin-bottom:14px">${pl('semana')}Últimos 7 días</span> ${pl('mes')}Mes actual</span> ${pl('anterior')}Mes anterior</span> ${pl('todo')}Todo</span>
+    <button class="pg-btn sm secondary" style="margin-left:10px" onclick="imprimirReporte()">🖨 Imprimir reporte</button>
+    ${pendientes?`<button class="pg-btn sm mint" onclick="recalcRepartos()">Repartir ${pendientes} cobro(s) sin desglose</button>`:''}
+  </div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Ingreso bruto</div><div class="val">${fmt$(bruto)}</div><div class="sub">${rep.length} cobros validados</div></div>
+    <div class="pg-kpi"><div class="lbl">Operarios</div><div class="val">${fmt$(oper)}</div><div class="sub">${bruto?Math.round(oper/bruto*100):0}% del bruto</div></div>
+    <div class="pg-kpi"><div class="lbl">OPEX</div><div class="val">${fmt$(opex)}</div><div class="sub">${bruto?Math.round(opex/bruto*100):0}% del bruto</div></div>
+    <div class="pg-kpi"><div class="lbl">Utilidad ProtectGo · Operyx</div><div class="val">${fmt$(util)}</div><div class="sub">margen ${bruto?Math.round(util/bruto*100):0}%</div></div>
+  </div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Utilidad por cliente</h2><div class="h2sub">Qué tan útil es la operación con cada asegurado en el periodo.</div>
+      <table class="pg-table"><thead><tr><th>Cliente</th><th style="text-align:right">Cobros</th><th style="text-align:right">Bruto</th><th style="text-align:right">Operario</th><th style="text-align:right">OPEX</th><th style="text-align:right">Utilidad</th><th style="text-align:right">Margen</th></tr></thead><tbody>
+      ${filas.map(([cid,p])=>`<tr><td><span class="linkish" onclick="abrirCliente('${cid}')">${esc(cliName(cid))}</span></td><td class="num" style="text-align:right">${p.n}</td><td class="num" style="text-align:right">${fmt$(p.bruto)}</td><td class="num" style="text-align:right">${fmt$(p.operario)}</td><td class="num" style="text-align:right">${fmt$(p.opex)}</td><td class="num" style="text-align:right">${fmt$(p.utilidad)}</td><td class="num" style="text-align:right">${p.bruto?Math.round(p.utilidad/p.bruto*100):0}%</td></tr>`).join('')||'<tr><td colspan="7" style="color:var(--pg-muted)">Sin cobros validados en el periodo. El desglose se genera al pasar un cobro a Fondos validados.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Reglas de reparto</h2><div class="h2sub">Las edita el director. Usa % del cobro o un monto fijo (si pones fijo, manda el fijo). Aplican a los cobros que se validen de ahí en adelante.</div>
+      ${REGLAS.map(r=>`
+      <div style="border:1px solid var(--pg-line);border-radius:11px;padding:12px 14px;margin-bottom:10px">
+        <div style="font-weight:700;color:var(--pg-ink);font-size:13px;margin-bottom:8px">${r.tipo==='semanal'?'💵 Pago semanal (dispatching)':'🛠 Servicios à la carte'}</div>
+        <div class="frow2">
+          <div class="field"><label>Operario %</label><input type="number" step="0.1" id="rg_op_${r.id}" value="${r.operario_pct}"></div>
+          <div class="field"><label>Operario fijo $</label><input type="number" step="0.01" id="rg_of_${r.id}" value="${r.operario_fijo}"></div>
+        </div>
+        <div class="frow2">
+          <div class="field"><label>OPEX %</label><input type="number" step="0.1" id="rg_xp_${r.id}" value="${r.opex_pct}"></div>
+          <div class="field"><label>OPEX fijo $</label><input type="number" step="0.01" id="rg_xf_${r.id}" value="${r.opex_fijo}"></div>
+        </div>
+        <button class="pg-btn sm mint" onclick="guardarRegla('${r.id}')">Guardar regla</button>
+      </div>`).join('')}
+      <div style="font-size:11.5px;color:var(--pg-muted)">Si cambias una regla y quieres re-aplicarla a lo ya validado, usa "Repartir cobros sin desglose" (solo toca los que no tienen desglose) o pídeme recalcular todo.</div>
+    </div>
+  </div>`;
+}
+function imprimirReporte(){
+  const hoy=new Date();
+  const lbl={semana:'Últimos 7 días',mes:'Mes actual',anterior:'Mes anterior',todo:'Histórico completo'}[REP_PERIODO];
+  const enPeriodo=r=>{
+    const d=new Date(r.created_at);
+    if(REP_PERIODO==='mes') return d.getMonth()===hoy.getMonth()&&d.getFullYear()===hoy.getFullYear();
+    if(REP_PERIODO==='anterior'){const a=new Date(hoy.getFullYear(),hoy.getMonth()-1,1);return d.getMonth()===a.getMonth()&&d.getFullYear()===a.getFullYear();}
+    if(REP_PERIODO==='semana'){const t=new Date();t.setDate(t.getDate()-7);return d>=t;}
+    return true;
+  };
+  const rep=REPARTOS.filter(enPeriodo);
+  const sum=k=>rep.reduce((a,r)=>a+Number(r[k]),0);
+  const porCliente={};
+  rep.forEach(r=>{const k=r.cliente_id||'—';porCliente[k]=porCliente[k]||{n:0,bruto:0,operario:0,opex:0,utilidad:0};const p=porCliente[k];p.n++;p.bruto+=Number(r.monto_bruto);p.operario+=Number(r.operario);p.opex+=Number(r.opex);p.utilidad+=Number(r.utilidad);});
+  const filas=Object.entries(porCliente).sort((a,b)=>b[1].utilidad-a[1].utilidad);
+  $('printArea').innerHTML=`
+  <div class="pgdos pgprint-page">
+    <div class="dhdr"><div class="dbrand">Protect<span class="go">GO</span> Services</div><div class="dsub">Reporte de utilidades · Amazon Relay · Operyx</div></div>
+    <h1>REPORTE DE UTILIDADES</h1>
+    <div class="dmeta-top">Periodo: ${lbl} · Generado ${hoy.toLocaleDateString('es-CO')} · ${rep.length} cobros validados</div>
+    <div class="dgrid">
+      <div class="dfield"><div class="fl">Ingreso bruto</div><div class="fv">${fmt$(sum('monto_bruto'))}</div></div>
+      <div class="dfield"><div class="fl">Pago operarios</div><div class="fv">${fmt$(sum('operario'))}</div></div>
+      <div class="dfield"><div class="fl">OPEX asignado</div><div class="fv">${fmt$(sum('opex'))}</div></div>
+      <div class="dfield"><div class="fl">Utilidad ProtectGo · Operyx</div><div class="fv">${fmt$(sum('utilidad'))}</div></div>
+    </div>
+    <table class="dinv"><tr><th>Cliente</th><th>Cobros</th><th>Bruto</th><th>Operario</th><th>OPEX</th><th>Utilidad</th><th>Margen</th></tr>
+    ${filas.map(([cid,p])=>`<tr><td>${esc(cliName(cid))}</td><td>${p.n}</td><td>${fmt$(p.bruto)}</td><td>${fmt$(p.operario)}</td><td>${fmt$(p.opex)}</td><td>${fmt$(p.utilidad)}</td><td>${p.bruto?Math.round(p.utilidad/p.bruto*100):0}%</td></tr>`).join('')||'<tr><td colspan="7">Sin datos en el periodo</td></tr>'}
+    </table>
     <div class="dfoot"><b>ProtectGo Services</b> · +1 (210) 961-9194 · admin@protectgoservices.com<br>17685 Senior Rd, Unit 5, Von Ormy TX 78073-4279 · www.protectgoservices.com</div>
   </div>`;
   window.print();
