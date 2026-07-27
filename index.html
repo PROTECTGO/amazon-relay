@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amazon Relay · ProtectGo</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,ital,wght@9..144,1,800&family=Montserrat:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>if(!window.supabase){document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\/script>');}</script>
+<style>
+:root{
+  --pg-ink:#1B2D3A;--pg-ink-2:#162630;--pg-mint:#2DBFA3;--pg-mint-soft:#C4E8DF;--pg-mint-deep:#229A82;
+  --pg-bg:#F4F7FA;--pg-card:#FFFFFF;--pg-line:#E7EDF2;--pg-txt:#28323B;--pg-muted:#6B7D89;
+  --pg-pos:#1F9D6B;--pg-neg:#D5594F;--pg-warn:#B8841F;
+  --pg-font-gabi:"Fraunces",Georgia,serif;--pg-font-title:"Montserrat",sans-serif;
+  --pg-font-body:"Inter",sans-serif;--pg-font-num:"JetBrains Mono",monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--pg-bg);color:var(--pg-txt);font-family:var(--pg-font-body);}
+.pg-app{min-height:100vh;display:flex;}
+.pg-side{width:240px;background:var(--pg-ink);color:#fff;padding:26px 16px;flex-shrink:0;}
+.pg-brand{display:flex;align-items:center;gap:11px;margin-bottom:24px;}
+.pg-shield{width:36px;height:36px;border-radius:9px;background:linear-gradient(150deg,var(--pg-mint),var(--pg-mint-deep));display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--pg-ink);font-size:14px;font-family:var(--pg-font-title);}
+.pg-wordmark{font-family:var(--pg-font-gabi);font-style:italic;font-weight:800;font-size:22px;color:var(--pg-mint);letter-spacing:-.5px;}
+.nav-lbl{font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#5f7382;margin:16px 8px 7px;}
+.pg-side a{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:9px;color:#b9c6d0;font-size:13.5px;font-weight:500;text-decoration:none;margin-bottom:2px;cursor:pointer;}
+.pg-side a.on,.pg-side a:hover{background:rgba(45,191,163,.15);color:#fff;}
+.pg-foot{margin-top:20px;padding-top:13px;border-top:1px solid rgba(255,255,255,.12);font-size:11px;color:#8da0ad;line-height:1.6;}
+.pg-main{flex:1;padding:28px 34px;max-width:1180px;}
+.pg-eyebrow{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--pg-mint-deep);margin-bottom:6px;}
+.pg-main h1{font-family:var(--pg-font-title);font-size:26px;font-weight:800;color:var(--pg-ink);margin:0;}
+.pg-sub{color:var(--pg-muted);font-size:13.5px;margin:3px 0 20px;}
+.pg-kpis{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px;}
+.pg-kpi{flex:1;min-width:160px;background:var(--pg-card);border:1px solid var(--pg-line);border-radius:14px;padding:15px 17px;position:relative;overflow:hidden;box-shadow:0 1px 3px rgba(27,45,58,.04);}
+.pg-kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--pg-mint);}
+.pg-kpi .lbl{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--pg-muted);}
+.pg-kpi .val{font-family:var(--pg-font-num);font-size:24px;font-weight:600;color:var(--pg-ink);margin-top:6px;font-variant-numeric:tabular-nums;}
+.pg-kpi .sub{font-size:11.5px;color:var(--pg-muted);margin-top:2px;}
+.pg-card{background:var(--pg-card);border:1px solid var(--pg-line);border-radius:15px;padding:20px 22px;box-shadow:0 1px 3px rgba(27,45,58,.04);margin-bottom:18px;}
+.pg-card h2{font-family:var(--pg-font-title);font-size:16px;font-weight:800;color:var(--pg-ink);margin:0 0 3px;}
+.pg-card .h2sub{font-size:12px;color:var(--pg-muted);margin-bottom:14px;}
+.pg-table{width:100%;border-collapse:collapse;}
+.pg-table th{text-align:left;font-size:10.5px;color:var(--pg-muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 6px;border-bottom:2px solid var(--pg-ink);font-weight:700;}
+.pg-table td{padding:10px 6px;font-size:13px;color:#3a4751;border-bottom:1px solid var(--pg-line);vertical-align:middle;}
+.pg-table td.num{font-family:var(--pg-font-num);font-variant-numeric:tabular-nums;color:var(--pg-ink);font-weight:600;}
+.pg-table tr:hover td{background:#FAFCFD;}
+.pg-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:10.5px;font-weight:700;white-space:nowrap;}
+.pg-pill.ok{background:#E3F4EF;color:var(--pg-pos);}
+.pg-pill.fin{background:var(--pg-mint-soft);color:var(--pg-ink-2);}
+.pg-pill.due{background:#FCEEEC;color:var(--pg-neg);}
+.pg-pill.warn{background:#FBF3E2;color:var(--pg-warn);}
+.pg-pill.n{background:#EEF1F5;color:var(--pg-ink);}
+.pg-btn{background:var(--pg-ink);color:#fff;border:none;border-radius:999px;padding:9px 18px;font-family:var(--pg-font-body);font-size:13px;font-weight:600;cursor:pointer;}
+.pg-btn:hover{background:var(--pg-ink-2);}
+.pg-btn .a{color:var(--pg-mint);}
+.pg-btn.secondary{background:transparent;color:var(--pg-ink);border:2px solid var(--pg-line);}
+.pg-btn.sm{padding:5px 12px;font-size:11.5px;}
+.pg-btn.mint{background:var(--pg-mint-deep);}
+.field{margin-bottom:11px;}
+.field label{display:block;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--pg-muted);margin-bottom:4px;}
+.field input,.field select,.field textarea{width:100%;border:1px solid var(--pg-line);border-radius:9px;padding:9px 11px;font-family:var(--pg-font-body);font-size:13.5px;color:var(--pg-txt);background:#FAFCFD;outline:none;}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--pg-mint);}
+.frow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.frow2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+@media(max-width:860px){.frow,.frow2{grid-template-columns:1fr;}.pg-side{display:none;}}
+.two{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;align-items:start;}
+@media(max-width:980px){.two{grid-template-columns:1fr;}}
+.evt{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--pg-line);font-size:12.5px;}
+.evt:last-child{border-bottom:none;}
+.evt .dot{width:8px;height:8px;border-radius:99px;background:var(--pg-mint);margin-top:5px;flex-shrink:0;}
+.evt .w{color:var(--pg-muted);font-size:11px;}
+.toast{position:fixed;bottom:22px;right:22px;background:var(--pg-ink);color:#fff;padding:12px 18px;border-radius:11px;font-size:13px;box-shadow:0 8px 24px rgba(27,45,58,.3);display:none;z-index:99;}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--pg-bg);}
+.login-card{background:#fff;border:1px solid var(--pg-line);border-radius:18px;padding:34px 36px;width:360px;box-shadow:0 10px 30px rgba(27,45,58,.08);}
+.hidden{display:none !important;}
+.linkish{color:var(--pg-mint-deep);cursor:pointer;font-weight:600;}
+.mono{font-family:var(--pg-font-num);}
+.copybox{background:#12212B;border-radius:11px;padding:14px 16px;color:#D6E4EC;font-family:var(--pg-font-num);font-size:11.5px;line-height:1.7;white-space:pre-wrap;margin-top:10px;}
+.svc-price input{width:90px;font-family:var(--pg-font-num);}
+/* ===== INVOICE PRINT (plantilla Operyx x ProtectGo) ===== */
+#printArea{display:none;}
+@media print{
+  body *{visibility:hidden;}
+  #printArea,#printArea *{visibility:visible;}
+  #printArea{display:block;position:absolute;left:0;top:0;width:100%;}
+  .pgprint-page{page-break-after:always;}
+}
+.pgprint{font-family:Arial,Helvetica,sans-serif;color:#333;max-width:760px;margin:0 auto;padding:40px 30px;}
+.pgprint .hdr{display:flex;justify-content:flex-end;margin-bottom:8px;}
+.pgprint .brand{font-family:var(--pg-font-title);font-weight:800;font-size:20px;color:#1B2D3A;}
+.pgprint .brand .go{color:#2DBFA3;}
+.pgprint h1{color:#5a6b76;text-align:center;letter-spacing:1px;font-size:26px;margin:18px 0 26px;font-family:Arial;}
+.pgprint .meta{display:flex;justify-content:space-between;font-size:13px;margin-bottom:26px;line-height:1.8;}
+.pgprint .meta b{color:#222;}
+.pgprint .meta .r{text-align:right;}
+.pgprint table.inv{width:100%;border-collapse:collapse;font-size:13px;}
+.pgprint table.inv th{background:#f2f2f2;border:1px solid #ddd;padding:10px;font-weight:600;text-align:center;}
+.pgprint table.inv th:first-child{text-align:left;}
+.pgprint table.inv td{border:1px solid #ddd;padding:12px 10px;vertical-align:top;}
+.pgprint table.inv td.c{text-align:center;}
+.pgprint .totrow td{background:#f2f2f2;font-weight:700;}
+.pgprint .terms{margin-top:40px;font-size:12.5px;line-height:1.6;}
+.pgprint .terms h3{font-size:15px;color:#222;}
+.pgprint .terms ol{padding-left:20px;}
+.pgprint .footline{margin-top:34px;border-top:1px solid #999;padding-top:8px;text-align:center;font-style:italic;color:#777;font-size:12px;}
+/* ===== DOSIER PRINT (membrete oficial ProtectGo Services) ===== */
+.pgdos{font-family:Arial,Helvetica,sans-serif;color:#333;max-width:760px;margin:0 auto;padding:40px 34px;position:relative;border-top:5px solid #2DBFA3;}
+.pgdos .dhdr{text-align:center;margin-bottom:22px;}
+.pgdos .dbrand{font-family:var(--pg-font-title);font-weight:800;font-size:26px;color:#1B2D3A;}
+.pgdos .dbrand .go{color:#2DBFA3;}
+.pgdos .dsub{font-size:11px;letter-spacing:2px;color:#6B7D89;text-transform:uppercase;margin-top:2px;}
+.pgdos h1{font-family:var(--pg-font-title);color:#1B2D3A;text-align:center;font-size:20px;letter-spacing:.5px;margin:22px 0 4px;}
+.pgdos .dmeta-top{text-align:center;font-size:11.5px;color:#6B7D89;margin-bottom:22px;}
+.pgdos .dbox{background:#EEF6F3;border-radius:12px;padding:16px 20px;margin-bottom:18px;font-size:13px;line-height:1.7;}
+.pgdos .dbox b{color:#1B2D3A;}
+.pgdos .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;}
+.pgdos .dfield{border:1px solid #E7EDF2;border-radius:9px;padding:10px 13px;}
+.pgdos .dfield .fl{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6B7D89;}
+.pgdos .dfield .fv{font-size:13.5px;color:#1B2D3A;margin-top:2px;font-weight:600;}
+.pgdos table.dinv{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px;}
+.pgdos table.dinv th{background:#EEF6F3;border:1px solid #E7EDF2;padding:8px;text-align:left;color:#1B2D3A;}
+.pgdos table.dinv td{border:1px solid #E7EDF2;padding:8px;}
+.pgdos .dfoot{margin-top:38px;border-top:1px solid #E7EDF2;padding-top:12px;text-align:center;font-size:11px;color:#6B7D89;line-height:1.8;}
+.pgdos .dfoot b{color:#1B2D3A;}
+.paste-zone{border:2px dashed var(--pg-mint);border-radius:12px;background:#F2FBF8;padding:22px;text-align:center;color:var(--pg-mint-deep);font-size:13px;font-weight:600;margin-bottom:14px;cursor:text;outline:none;}
+.paste-zone small{display:block;color:var(--pg-muted);font-weight:500;margin-top:5px;}
+.paste-zone img{max-width:100%;max-height:160px;border-radius:8px;margin-top:10px;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginView" class="login-wrap">
+  <div class="login-card">
+    <div class="pg-brand" style="margin-bottom:18px"><div class="pg-shield">PG</div><span style="font-family:var(--pg-font-title);font-weight:800;font-size:18px;color:var(--pg-ink)">Amazon <span style="color:var(--pg-mint-deep)">Relay</span></span></div>
+    <div style="font-family:var(--pg-font-title);font-weight:800;font-size:19px;color:var(--pg-ink)">ProtectGo · Operyx</div>
+    <div style="font-size:12.5px;color:var(--pg-muted);margin:4px 0 18px">Herramienta del equipo Amazon Audit</div>
+    <div class="field"><label>Correo</label><input id="loginEmail" type="email" value="amazonaud@protectgoservices.com"></div>
+    <div class="field"><label>Contraseña</label><input id="loginPass" type="password" placeholder="••••••••"></div>
+    <div id="loginErr" style="color:var(--pg-neg);font-size:12px;margin-bottom:10px;display:none"></div>
+    <button class="pg-btn" style="width:100%" onclick="doLogin()">Entrar <span class="a">→</span></button>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="appView" class="pg-app hidden">
+  <nav class="pg-side">
+    <div class="pg-brand"><div class="pg-shield">PG</div><span style="font-family:var(--pg-font-title);font-weight:800;font-size:16px;color:#fff">Amazon <span style="color:var(--pg-mint)">Relay</span></span></div>
+    <div class="nav-lbl">Amazon Audit</div>
+    <a data-v="resumen" class="on" onclick="nav('resumen')">▤ Resumen</a>
+    <a data-v="clientes" onclick="nav('clientes')">👤 Clientes</a>
+    <a data-v="loads" onclick="nav('loads')">📸 Cargar viaje</a>
+    <a data-v="cobros" onclick="nav('cobros')">💵 Cobros</a>
+    <a data-v="servicios" onclick="nav('servicios')">🛠 Servicios</a>
+    <a data-v="invoices" onclick="nav('invoices')">🧾 Invoices</a>
+    <div class="pg-foot">
+      Amazon Relay · ProtectGo<br>
+      <span id="footUser" style="color:var(--pg-mint)"></span><br>
+      <span class="linkish" style="color:#8da0ad" onclick="doLogout()">Cerrar sesión</span>
+    </div>
+  </nav>
+  <main class="pg-main" id="main"></main>
+</div>
+
+<div class="toast" id="toast"></div>
+<div id="printArea"></div>
+
+<script>
+const SB_URL='https://bwqzypuiqgxzsrtsueab.supabase.co';
+const SB_KEY='sb_publishable_VbA94M3mF-Z6kgtPnda-cQ_diKF8L49';
+const sb=window.supabase.createClient(SB_URL,SB_KEY);
+let ME=null, CLIENTES=[], SERVICIOS=[], COBROS=[], INVOICES=[], LOADS=[], VIEW='resumen', DETALLE=null;
+
+const $=id=>document.getElementById(id);
+const fmt$=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtD=d=>d? new Date(d+(d.length===10?'T12:00:00':'')).toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2600);}
+
+const ESTADOS_COBRO=['registrado','autorizado','enviado_fam','fondos_validados','pagado'];
+const ESTADOS_LOAD=['cargado','en_ruta','entregado','facturado','cobrado'];
+const ESTADO_LBL={registrado:'Registrado',autorizado:'Autorizado',enviado_fam:'Enviado a FAM',fondos_validados:'Fondos validados',pagado:'Pagado',por_cobrar:'Por cobrar',anulado:'Anulado',activo:'Activo',suspendido:'Suspendido',recuperacion:'Recuperación',inactivo:'Inactivo',cargado:'Cargado',en_ruta:'En ruta',entregado:'Entregado',facturado:'Facturado',cobrado:'Cobrado'};
+const ESTADO_CLS={registrado:'n',autorizado:'warn',enviado_fam:'warn',fondos_validados:'fin',pagado:'ok',por_cobrar:'warn',anulado:'due',activo:'ok',suspendido:'due',recuperacion:'warn',inactivo:'n',cargado:'n',en_ruta:'warn',entregado:'fin',facturado:'warn',cobrado:'ok'};
+const pill=e=>`<span class="pg-pill ${ESTADO_CLS[e]||'n'}">${ESTADO_LBL[e]||e}</span>`;
+
+/* ---------- AUTH ---------- */
+async function doLogin(){
+  const {data,error}=await sb.auth.signInWithPassword({email:$('loginEmail').value.trim(),password:$('loginPass').value});
+  if(error){$('loginErr').textContent='No se pudo entrar: '+error.message;$('loginErr').style.display='block';return;}
+  boot(data.user);
+}
+async function doLogout(){await sb.auth.signOut();location.reload();}
+async function boot(user){
+  ME=user;$('footUser').textContent=user.email;
+  $('loginView').classList.add('hidden');$('appView').classList.remove('hidden');
+  await loadAll(); render();
+}
+sb.auth.getSession().then(({data})=>{if(data.session) boot(data.session.user);});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!$('loginView').classList.contains('hidden')) doLogin();});
+
+/* ---------- DATA ---------- */
+async function loadAll(){
+  const [c,s,co,inv,ld]=await Promise.all([
+    sb.from('amazon_clientes').select('*').order('empresa'),
+    sb.from('amazon_servicios').select('*').order('orden'),
+    sb.from('amazon_cobros').select('*').order('created_at',{ascending:false}),
+    sb.from('amazon_invoices').select('*').order('numero_seq',{ascending:false}),
+    sb.from('amazon_loads').select('*').order('created_at',{ascending:false}),
+  ]);
+  CLIENTES=c.data||[];SERVICIOS=s.data||[];COBROS=co.data||[];INVOICES=inv.data||[];LOADS=ld.data||[];
+}
+async function evento(tipo,detalle,ids={}){
+  await sb.from('amazon_eventos').insert({tipo,detalle,quien:ME.email,...ids});
+}
+const cliName=id=>{const c=CLIENTES.find(x=>x.id===id);return c? c.empresa : '—';};
+const cli=id=>CLIENTES.find(x=>x.id===id);
+const esGuia=c=>(c?.empresa||'').startsWith('🧭');
+const hoyISO=()=>new Date().toISOString().slice(0,10);
+const haceISO=d=>{const t=new Date();t.setDate(t.getDate()-d);return t.toISOString().slice(0,10);};
+
+/* ---------- NAV / RENDER ---------- */
+function nav(v){VIEW=v;DETALLE=null;document.querySelectorAll('.pg-side a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));render();}
+function render(){
+  const M=$('main');
+  if(VIEW==='resumen') M.innerHTML=vResumen();
+  else if(VIEW==='clientes') M.innerHTML=DETALLE? vClienteDetalle(DETALLE):vClientes();
+  else if(VIEW==='loads') M.innerHTML=vLoads();
+  else if(VIEW==='cobros') M.innerHTML=vCobros();
+  else if(VIEW==='servicios') M.innerHTML=vServicios();
+  else if(VIEW==='invoices') M.innerHTML=vInvoices();
+  if(VIEW==='loads') setupPasteZone();
+}
+
+/* ---------- RESUMEN ---------- */
+function vResumen(){
+  const mes=new Date().getMonth(),yr=new Date().getFullYear();
+  const cobrosMes=COBROS.filter(c=>{const d=new Date(c.created_at);return d.getMonth()===mes&&d.getFullYear()===yr;});
+  const pagadoMes=cobrosMes.filter(c=>['fondos_validados','pagado'].includes(c.estado)).reduce((a,c)=>a+Number(c.monto),0);
+  const pendiente=COBROS.filter(c=>!['fondos_validados','pagado'].includes(c.estado)).reduce((a,c)=>a+Number(c.monto),0);
+  const invPorCobrar=INVOICES.filter(i=>i.estado==='por_cobrar').length;
+  const ult=COBROS.slice(0,8);
+  return `
+  <div class="pg-eyebrow">Dashboard operativo · Amazon Audit</div>
+  <h1>Amazon Relay</h1>
+  <div class="pg-sub">Trazabilidad de clientes, cobros semanales, tarifas e invoices.</div>
+  <div class="pg-card" style="background:#F2FBF8;border-color:var(--pg-mint)">
+    <h2>🧭 Guía rápida de registro</h2>
+    <div class="h2sub">Sigue este orden — pocos clics, sin pasos raros:</div>
+    <div style="font-size:12.8px;color:var(--pg-txt);line-height:2.1">
+      <b>1.</b> 👤 Clientes → "Registrar cliente" (empresa + DOT + contrato es lo mínimo).<br>
+      <b>2.</b> 📸 Cargar viaje → llena el load del cliente.<br>
+      <b>3.</b> 💵 Cobros → registra el pago semanal a debitar, avanza el estado con el botón →.<br>
+      <b>4.</b> En Cobros, botón 🧾 → genera el invoice automático, ya numerado.<br>
+      Hay un cliente <b>🧭 EJEMPLO GUÍA</b> ya armado de punta a punta en Clientes — ábrelo para ver cómo se ve todo lleno.
+    </div>
+  </div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Clientes activos</div><div class="val">${CLIENTES.filter(c=>c.estado==='activo').length}</div><div class="sub">${CLIENTES.length} en total</div></div>
+    <div class="pg-kpi"><div class="lbl">Cobrado este mes</div><div class="val">${fmt$(pagadoMes)}</div><div class="sub">${cobrosMes.length} cobros registrados</div></div>
+    <div class="pg-kpi"><div class="lbl">Pendiente por validar</div><div class="val">${fmt$(pendiente)}</div><div class="sub">en flujo con FAM</div></div>
+    <div class="pg-kpi"><div class="lbl">Invoices por cobrar</div><div class="val">${invPorCobrar}</div><div class="sub">${INVOICES.length} emitidos</div></div>
+  </div>
+  <div class="pg-card">
+    <h2>Últimos cobros</h2><div class="h2sub">Los más recientes en el flujo.</div>
+    <table class="pg-table"><thead><tr><th>Cliente</th><th>Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th></tr></thead><tbody>
+    ${ult.map(c=>`<tr><td><span class="linkish" onclick="abrirCliente('${c.cliente_id}')">${esc(cliName(c.cliente_id))}</span></td><td>${esc(c.concepto)}</td><td>${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td><td class="num" style="text-align:right">${fmt$(c.monto)}</td><td>${pill(c.estado)}</td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros aún — registra el primero en 💵 Cobros.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+
+/* ---------- CLIENTES ---------- */
+function vClientes(){
+  return `
+  <div class="pg-eyebrow">Trazabilidad</div><h1>Clientes</h1>
+  <div class="pg-sub">Cada cliente con su contrato, códigos y su historial completo.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de clientes</h2><div class="h2sub">Clic en un cliente para ver su trazabilidad.</div>
+      <table class="pg-table"><thead><tr><th>Empresa</th><th>DOT #</th><th>Contrato</th><th>Estado</th></tr></thead><tbody>
+      ${CLIENTES.map(c=>`<tr${esGuia(c)?' style="background:#F2FBF8"':''}><td><span class="linkish" onclick="abrirCliente('${c.id}')">${esc(c.empresa)}</span>${esGuia(c)?' <span class="pg-pill fin">GUÍA</span>':''}${c.dba?`<div style="font-size:11px;color:var(--pg-muted)">DBA: ${esc(c.dba)}</div>`:''}</td><td class="num">${esc(c.dot||'—')}</td><td>${esc(c.contrato||'—')}</td><td>${pill(c.estado)}</td></tr>`).join('')||'<tr><td colspan="4" style="color:var(--pg-muted)">Sin clientes aún.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Registrar cliente</h2><div class="h2sub">Solo llena Empresa, DOT y Contrato para registrar rápido — el resto es opcional y lo completas después.</div>
+      <div class="field"><label>Empresa * <span style="font-weight:400;text-transform:none">(nombre tal cual en el correo)</span></label><input id="ncEmpresa" placeholder="Ej: EL POTRILLO TRANSPORTATION LLC"></div>
+      <div class="frow2">
+        <div class="field"><label>DOT #</label><input id="ncDot" placeholder="Ej: 4357113"></div>
+        <div class="field"><label>Contrato</label><input id="ncContrato" placeholder="Ej: Dispatching semanal"></div>
+      </div>
+      <div class="field"><label>Códigos internos <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncCodigos" placeholder="Código interno del cliente, si aplica"></div>
+      <div class="frow2">
+        <div class="field"><label>DBA <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncDba" placeholder="Nombre comercial, si es distinto"></div>
+        <div class="field"><label>MC # <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncMc"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Representante legal <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncRep"></div>
+        <div class="field"><label>Tarifa semanal $ <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncTarifa" type="number" step="0.01" placeholder="Si el cobro es siempre el mismo monto"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Teléfono <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncTel"></div>
+        <div class="field"><label>Email <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncEmail"></div>
+      </div>
+      <div class="field"><label>Notas <span style="font-weight:400;text-transform:none">(opcional)</span></label><textarea id="ncNotas" rows="2"></textarea></div>
+      <button class="pg-btn" onclick="crearCliente()">Registrar cliente <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+async function crearCliente(){
+  const empresa=$('ncEmpresa').value.trim();
+  if(!empresa) return toast('Falta la empresa');
+  const row={empresa,dba:$('ncDba').value.trim()||null,dot:$('ncDot').value.trim()||null,mc:$('ncMc').value.trim()||null,
+    representante:$('ncRep').value.trim()||null,telefono:$('ncTel').value.trim()||null,email:$('ncEmail').value.trim()||null,
+    contrato:$('ncContrato').value.trim()||null,tarifa_semanal:$('ncTarifa').value||null,codigos:$('ncCodigos').value.trim()||null,notas:$('ncNotas').value.trim()||null};
+  const {data,error}=await sb.from('amazon_clientes').insert(row).select().single();
+  if(error) return toast('Error: '+error.message);
+  await evento('cliente_creado','Cliente registrado: '+empresa,{cliente_id:data.id});
+  toast('Cliente registrado');await loadAll();render();
+}
+async function abrirCliente(id){
+  VIEW='clientes';DETALLE=id;
+  document.querySelectorAll('.pg-side a').forEach(a=>a.classList.toggle('on',a.dataset.v==='clientes'));
+  const {data}=await sb.from('amazon_eventos').select('*').eq('cliente_id',id).order('created_at',{ascending:false}).limit(40);
+  window._eventos=data||[];render();
+}
+function vClienteDetalle(id){
+  const c=cli(id);if(!c) return vClientes();
+  const cobros=COBROS.filter(x=>x.cliente_id===id);
+  const invs=INVOICES.filter(x=>x.cliente_id===id);
+  const totalPagado=cobros.filter(x=>['fondos_validados','pagado'].includes(x.estado)).reduce((a,x)=>a+Number(x.monto),0);
+  return `
+  <div class="pg-eyebrow"><span class="linkish" onclick="nav('clientes')">← Clientes</span></div>
+  <h1>${esc(c.empresa)}</h1>
+  <div class="pg-sub">${c.dba?'DBA: '+esc(c.dba)+' · ':''}DOT # ${esc(c.dot||'—')} ${c.mc?'· MC '+esc(c.mc):''} · ${pill(c.estado)}</div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Contrato</div><div class="val" style="font-size:15px">${esc(c.contrato||'—')}</div><div class="sub">tarifa: ${c.tarifa_semanal?fmt$(c.tarifa_semanal):'—'}</div></div>
+    <div class="pg-kpi"><div class="lbl">Total validado</div><div class="val">${fmt$(totalPagado)}</div><div class="sub">${cobros.length} cobros</div></div>
+    <div class="pg-kpi"><div class="lbl">Invoices</div><div class="val">${invs.length}</div><div class="sub">${invs.filter(i=>i.estado==='por_cobrar').length} por cobrar</div></div>
+    <div class="pg-kpi"><div class="lbl">Códigos</div><div class="val" style="font-size:14px">${esc(c.codigos||'—')}</div><div class="sub">Rep: ${esc(c.representante||'—')}</div></div>
+  </div>
+  <div class="two">
+    <div>
+      <div class="pg-card">
+        <h2>Cobros del cliente</h2><div class="h2sub">Su semana a semana.</div>
+        <table class="pg-table"><thead><tr><th>Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${cobros.map(rowCobro).join('')||'<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros.</td></tr>'}
+        </tbody></table>
+      </div>
+      <div class="pg-card">
+        <h2>Invoices del cliente</h2>
+        <table class="pg-table"><thead><tr><th>Número</th><th>Fecha</th><th style="text-align:right">Total</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${invs.map(rowInvoice).join('')||'<tr><td colspan="5" style="color:var(--pg-muted)">Sin invoices.</td></tr>'}
+        </tbody></table>
+      </div>
+    </div>
+    <div class="pg-card">
+      <h2>Trazabilidad</h2><div class="h2sub">Quién hizo qué y cuándo.</div>
+      ${(window._eventos||[]).map(e=>`<div class="evt"><div class="dot"></div><div><div>${esc(e.detalle||e.tipo)}</div><div class="w">${esc(e.quien||'')} · ${new Date(e.created_at).toLocaleString('es-CO')}</div></div></div>`).join('')||'<div style="color:var(--pg-muted);font-size:12.5px">Sin eventos.</div>'}
+      <div style="margin-top:12px"><input id="notaTxt" placeholder="Agregar nota…" style="width:100%;border:1px solid var(--pg-line);border-radius:9px;padding:8px 11px;font-size:13px"><button class="pg-btn sm" style="margin-top:8px" onclick="agregarNota('${id}')">Guardar nota</button></div>
+    </div>
+  </div>`;
+}
+async function agregarNota(id){
+  const t=$('notaTxt').value.trim();if(!t)return;
+  await evento('nota',t,{cliente_id:id});toast('Nota guardada');abrirCliente(id);
+}
+
+/* ---------- COBROS ---------- */
+function rowCobro(c){
+  const i=ESTADOS_COBRO.indexOf(c.estado);
+  const next=i>=0&&i<ESTADOS_COBRO.length-1? ESTADOS_COBRO[i+1]:null;
+  return `<tr><td>${esc(c.concepto)}${c.transaccion?`<div style="font-size:10.5px;color:var(--pg-muted)" class="mono">Trans #${esc(c.transaccion)}</div>`:''}</td>
+  <td style="font-size:12px">${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td>
+  <td class="num" style="text-align:right">${fmt$(c.monto)}</td><td>${pill(c.estado)}</td>
+  <td style="white-space:nowrap">${next?`<button class="pg-btn sm mint" onclick="avanzarCobro('${c.id}','${next}')">→ ${ESTADO_LBL[next]}</button>`:''}
+  <button class="pg-btn sm secondary" onclick="correoCobro('${c.id}')">✉</button>
+  <button class="pg-btn sm secondary" onclick="invoiceDesdeCobro('${c.id}')">🧾</button></td></tr>`;
+}
+function vCobros(){
+  return `
+  <div class="pg-eyebrow">Cobros externos</div><h1>Cobros</h1>
+  <div class="pg-sub">Registro del cobro semanal (dispatching) y de servicios à la carte. Flujo: Registrado → Autorizado → Enviado a FAM → Fondos validados → Pagado.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de cobros</h2>
+      <table class="pg-table"><thead><tr><th>Cliente / Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${COBROS.map(c=>`<tr><td><span class="linkish" onclick="abrirCliente('${c.cliente_id}')">${esc(cliName(c.cliente_id))}</span><div style="font-size:11.5px;color:var(--pg-muted)">${esc(c.concepto)}${c.transaccion?` · <span class="mono">#${esc(c.transaccion)}</span>`:''}</div></td>
+        <td style="font-size:12px">${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td>
+        <td class="num" style="text-align:right">${fmt$(c.monto)}</td><td>${pill(c.estado)}</td>
+        <td style="white-space:nowrap">${(()=>{const i=ESTADOS_COBRO.indexOf(c.estado);const n=i>=0&&i<ESTADOS_COBRO.length-1?ESTADOS_COBRO[i+1]:null;return n?`<button class="pg-btn sm mint" title="Pasar a ${ESTADO_LBL[n]}" onclick="avanzarCobro('${c.id}','${n}')">→</button>`:''})()}
+        <button class="pg-btn sm secondary" title="Generar correo" onclick="correoCobro('${c.id}')">✉</button>
+        <button class="pg-btn sm secondary" title="Generar invoice" onclick="invoiceDesdeCobro('${c.id}')">🧾</button></td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros aún.</td></tr>'}
+      </tbody></table>
+      <div id="correoOut"></div>
+    </div>
+    <div class="pg-card">
+      <h2>Registrar pago semanal a debitar</h2><div class="h2sub">Las fechas ya vienen con la última semana — solo ajústalas si es otro periodo. Cliente + monto y ya.</div>
+      <div class="field"><label>Cliente *</label><select id="cbCliente">${CLIENTES.map(c=>`<option value="${c.id}">${esGuia(c)?'🧭 ':''}${esc(c.empresa)}${c.dot?' · DOT '+esc(c.dot):''}</option>`).join('')}</select></div>
+      <div class="field"><label>Tipo</label><select id="cbTipo" onchange="cbTipoChange()"><option value="semanal">Pago semanal (dispatching) — el más común</option><option value="servicio">Servicio de la tabla de tarifas</option></select></div>
+      <div class="field hidden" id="cbSvcWrap"><label>Servicio</label><select id="cbServicio" onchange="cbSvcChange()">${SERVICIOS.filter(s=>s.activo).map(s=>`<option value="${s.id}" data-p="${s.precio}">${esc(s.nombre)} — ${fmt$(s.precio)}${s.precio_max?'–'+fmt$(s.precio_max):''}</option>`).join('')}</select><div style="font-size:11px;color:var(--pg-muted);margin-top:4px">El monto se llena solo con la tarifa del servicio.</div></div>
+      <div class="frow2">
+        <div class="field"><label>Desde</label><input id="cbDesde" type="date" value="${haceISO(9)}"></div>
+        <div class="field"><label>Hasta</label><input id="cbHasta" type="date" value="${hoyISO()}"></div>
+      </div>
+      <div class="field"><label>Monto ($) a debitar *</label><input id="cbMonto" type="number" step="0.01" placeholder="Ej: 169.12"></div>
+      <div class="field"><label>Concepto <span style="font-weight:400;text-transform:none">(se llena solo, edítalo si quieres)</span></label><input id="cbConcepto" placeholder="Servicios de dispatching"></div>
+      <div class="field"><label>Notas <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="cbNotas"></div>
+      <button class="pg-btn" onclick="crearCobro()">Registrar cobro <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+function cbTipoChange(){$('cbSvcWrap').classList.toggle('hidden',$('cbTipo').value!=='servicio');if($('cbTipo').value==='servicio')cbSvcChange();else if(!$('cbConcepto').value)$('cbConcepto').value='Servicios de dispatching';}
+function cbSvcChange(){
+  if($('cbTipo').value!=='servicio')return;
+  const o=$('cbServicio').selectedOptions[0];if(!o)return;
+  $('cbMonto').value=o.dataset.p; $('cbConcepto').value=o.textContent.split('—')[0].trim();
+}
+async function crearCobro(){
+  const cliente_id=$('cbCliente').value;const monto=parseFloat($('cbMonto').value);
+  if(!cliente_id||!monto) return toast('Falta cliente o monto');
+  const tipo=$('cbTipo').value;
+  const row={cliente_id,tipo,monto,concepto:$('cbConcepto').value.trim()||($('cbTipo').value==='semanal'?'Servicios de dispatching':'Servicio'),
+    servicio_id:tipo==='servicio'?$('cbServicio').value:null,
+    periodo_desde:$('cbDesde').value||null,periodo_hasta:$('cbHasta').value||null,
+    notas:$('cbNotas').value.trim()||null,created_by:ME.email};
+  const {data,error}=await sb.from('amazon_cobros').insert(row).select().single();
+  if(error) return toast('Error: '+error.message);
+  await evento('cobro_registrado',`Cobro ${fmt$(monto)} · ${row.concepto}`,{cliente_id,cobro_id:data.id});
+  toast('Cobro registrado');await loadAll();render();
+}
+async function avanzarCobro(id,estado){
+  let transaccion=null;
+  if(estado==='fondos_validados'){transaccion=prompt('Número de transacción (FAM):')||null;}
+  const upd={estado};if(transaccion)upd.transaccion=transaccion;
+  const {error}=await sb.from('amazon_cobros').update(upd).eq('id',id);
+  if(error) return toast('Error: '+error.message);
+  const c=COBROS.find(x=>x.id===id);
+  await evento('cambio_estado',`Cobro pasó a ${ESTADO_LBL[estado]}${transaccion?' · Trans #'+transaccion:''}`,{cliente_id:c?.cliente_id,cobro_id:id});
+  toast('Estado: '+ESTADO_LBL[estado]);await loadAll();
+  if(DETALLE) abrirCliente(DETALLE); else render();
+}
+function correoCobro(id){
+  const c=COBROS.find(x=>x.id===id);if(!c)return;
+  const cl=cli(c.cliente_id)||{};
+  const per=c.periodo_desde?`del ${fmtD(c.periodo_desde)} al ${fmtD(c.periodo_hasta)}`:'';
+  const subject=`Pago semanal AMAZON RELAY - ${cl.empresa||''}${cl.dba?' DBA: '+cl.dba:''} DOT # ${cl.dot||''}`;
+  const body=`Buenas tardes!\n\nEl cliente relacionado en esta línea de correo AUTORIZA el cobro por ${fmt$(c.monto)}, por ${c.concepto.toLowerCase().startsWith('servicio')?c.concepto.toLowerCase():'los servicios prestados de '+c.concepto.toLowerCase()} ${per}.\n\nLa información del pago ya está en la base de datos de la agencia.\n\n¡Gracias!`;
+  const out=$('correoOut');
+  if(out) out.innerHTML=`<div class="copybox">PARA: FAM@protectgoservices.com · CC: sales@protectgoservices.com\nASUNTO: ${esc(subject)}\n\n${esc(body)}</div><button class="pg-btn sm" style="margin-top:8px" onclick='navigator.clipboard.writeText(${JSON.stringify(subject+"\n\n"+body)}).then(()=>toast("Correo copiado"))'>Copiar correo</button>`;
+  else {navigator.clipboard.writeText(subject+'\n\n'+body);toast('Correo copiado');}
+}
+
+/* ---------- CARGAR VIAJE (loads) + DOSIER — v2 ---------- */
+let _pastedImg=null;
+function setupPasteZone(){
+  const z=$('pasteZone');if(!z)return;
+  z.addEventListener('paste',e=>{
+    const items=(e.clipboardData||{}).items||[];
+    for(const it of items){
+      if(it.type.indexOf('image')===0){
+        const file=it.getAsFile();const reader=new FileReader();
+        reader.onload=ev=>{_pastedImg=ev.target.result;z.querySelector('.pz-preview').innerHTML=`<img src="${ev.target.result}">`;toast('Screenshot pegado — completa los campos y confirma');};
+        reader.readAsDataURL(file);
+      }
+    }
+  });
+}
+function rowLoad(l){
+  const i=ESTADOS_LOAD.indexOf(l.estado);
+  const next=i>=0&&i<ESTADOS_LOAD.length-1? ESTADOS_LOAD[i+1]:null;
+  return `<tr><td><b>${esc(l.load_id_externo||'—')}</b><div style="font-size:11px;color:var(--pg-muted)">${esc(cliName(l.cliente_id))}</div></td>
+  <td style="font-size:12px">${esc(l.origen||'—')} → ${esc(l.destino||'—')}</td>
+  <td class="num" style="text-align:right">${l.tarifa?fmt$(l.tarifa):'—'}</td><td>${pill(l.estado)}</td>
+  <td style="white-space:nowrap">${next?`<button class="pg-btn sm mint" onclick="avanzarLoad('${l.id}','${next}')">→ ${ESTADO_LBL[next]}</button>`:''}
+  <button class="pg-btn sm secondary" onclick="generarDosier('${l.id}')">📑</button></td></tr>`;
+}
+function vLoads(){
+  return `
+  <div class="pg-eyebrow">Autollenado · v2</div><h1>Cargar viaje</h1>
+  <div class="pg-sub">Pega el screenshot o correo del load de Amazon Relay y confirma los campos. Máquina de estados: Cargado → En ruta → Entregado → Facturado → Cobrado.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de viajes (loads)</h2>
+      <table class="pg-table"><thead><tr><th>Load / Cliente</th><th>Ruta</th><th style="text-align:right">Tarifa</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${LOADS.map(rowLoad).join('')||'<tr><td colspan="5" style="color:var(--pg-muted)">Sin viajes aún.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Cargar viaje</h2><div class="h2sub">Solo Cliente y Load ID son obligatorios — el resto lo llenas si lo tienes a mano.</div>
+      <div class="paste-zone" id="pasteZone" tabindex="0">📸 Clic aquí y pega (Ctrl/Cmd+V) el screenshot del load, de referencia
+        <small>Por ahora los campos se llenan a mano abajo mirando la imagen — la lectura automática es la siguiente fase.</small>
+        <div class="pz-preview"></div>
+      </div>
+      <div class="field"><label>Cliente *</label><select id="ldCliente">${CLIENTES.map(c=>`<option value="${c.id}">${esGuia(c)?'🧭 ':''}${esc(c.empresa)}</option>`).join('')}</select></div>
+      <div class="frow2">
+        <div class="field"><label>Load ID *</label><input id="ldLoadId" placeholder="Ej: AMZL-US1-2345678"></div>
+        <div class="field"><label>Tipo de carga <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldTipo" placeholder="Ej: Dry Van"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Origen</label><input id="ldOrigen" placeholder="Ciudad, estado"></div>
+        <div class="field"><label>Destino</label><input id="ldDestino" placeholder="Ciudad, estado"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Fecha / hora</label><input id="ldFecha" type="datetime-local" value="${new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)}"></div>
+        <div class="field"><label>Millas <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldMillas" type="number"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Tarifa (rate) $ <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldTarifa" type="number" step="0.01"></div>
+        <div class="field"><label>Camión / Placa <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldCamion"></div>
+      </div>
+      <div class="field"><label>Conductor <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldConductor"></div>
+      <div class="field"><label>Notas / soporte <span style="font-weight:400;text-transform:none">(opcional)</span></label><textarea id="ldNotas" rows="2"></textarea></div>
+      <button class="pg-btn" onclick="crearLoad()">Confirmar y registrar <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+async function crearLoad(){
+  const cliente_id=$('ldCliente').value;
+  if(!cliente_id) return toast('Falta el cliente');
+  if(!$('ldLoadId').value.trim()) return toast('Falta el Load ID');
+  const row={cliente_id,load_id_externo:$('ldLoadId').value.trim()||null,origen:$('ldOrigen').value.trim()||null,
+    destino:$('ldDestino').value.trim()||null,fecha_hora:$('ldFecha').value||null,millas:$('ldMillas').value||null,
+    tarifa:$('ldTarifa').value||null,camion_placa:$('ldCamion').value.trim()||null,conductor:$('ldConductor').value.trim()||null,
+    tipo_carga:$('ldTipo').value.trim()||null,notas:$('ldNotas').value.trim()||null,created_by:ME.email};
+  const {data,error}=await sb.from('amazon_loads').insert(row).select().single();
+  if(error) return toast('Error: '+error.message);
+  await evento('nota',`Load ${row.load_id_externo||data.id.slice(0,8)} cargado (${row.origen||'—'} → ${row.destino||'—'})`,{cliente_id,load_id:data.id});
+  _pastedImg=null;toast('Viaje registrado');await loadAll();render();
+}
+async function avanzarLoad(id,estado){
+  const {error}=await sb.from('amazon_loads').update({estado}).eq('id',id);
+  if(error) return toast('Error: '+error.message);
+  const l=LOADS.find(x=>x.id===id);
+  await evento('cambio_estado',`Load ${l?.load_id_externo||id.slice(0,8)} pasó a ${ESTADO_LBL[estado]}`,{cliente_id:l?.cliente_id,load_id:id});
+  toast('Estado: '+ESTADO_LBL[estado]);await loadAll();render();
+}
+async function generarDosier(loadId){
+  const l=LOADS.find(x=>x.id===loadId);if(!l)return;
+  const c=cli(l.cliente_id)||{};
+  const invRel=INVOICES.find(i=>i.cliente_id===l.cliente_id);
+  const {data,error}=await sb.from('amazon_dosieres').insert({cliente_id:l.cliente_id,load_id:loadId,invoice_id:invRel?.id||null,tipo:'viaje',generado_por:ME.email}).select().single();
+  if(error) return toast('Error: '+error.message);
+  await evento('nota',`Dosier generado para load ${l.load_id_externo||loadId.slice(0,8)}`,{cliente_id:l.cliente_id,load_id:loadId});
+  toast('Dosier generado');
+  $('printArea').innerHTML=`
+  <div class="pgdos pgprint-page">
+    <div class="dhdr"><div class="dbrand">Protect<span class="go">GO</span> Services</div><div class="dsub">Dosier de viaje · Amazon Relay</div></div>
+    <h1>DOSIER OPERATIVO</h1>
+    <div class="dmeta-top">Dosier #${String(data.numero_seq).padStart(3,'0')}-${new Date(data.created_at).getFullYear()} · Generado ${fmtD(data.created_at.slice(0,10))}</div>
+    <div class="dbox"><b>Cliente:</b> ${esc(c.empresa||'')}${c.dba?' DBA '+esc(c.dba):''} · <b>DOT #</b> ${esc(c.dot||'—')} ${c.mc?'· <b>MC</b> '+esc(c.mc):''}<br>
+    <b>Representante:</b> ${esc(c.representante||'—')} · <b>Contrato:</b> ${esc(c.contrato||'—')}</div>
+    <div class="dgrid">
+      <div class="dfield"><div class="fl">Load ID</div><div class="fv">${esc(l.load_id_externo||'—')}</div></div>
+      <div class="dfield"><div class="fl">Estado</div><div class="fv">${ESTADO_LBL[l.estado]||l.estado}</div></div>
+      <div class="dfield"><div class="fl">Origen → Destino</div><div class="fv">${esc(l.origen||'—')} → ${esc(l.destino||'—')}</div></div>
+      <div class="dfield"><div class="fl">Fecha / hora</div><div class="fv">${l.fecha_hora? new Date(l.fecha_hora).toLocaleString('es-CO'):'—'}</div></div>
+      <div class="dfield"><div class="fl">Millas</div><div class="fv">${esc(l.millas||'—')}</div></div>
+      <div class="dfield"><div class="fl">Tarifa</div><div class="fv">${l.tarifa?fmt$(l.tarifa):'—'}</div></div>
+      <div class="dfield"><div class="fl">Camión / Placa</div><div class="fv">${esc(l.camion_placa||'—')}</div></div>
+      <div class="dfield"><div class="fl">Conductor</div><div class="fv">${esc(l.conductor||'—')}</div></div>
+    </div>
+    ${invRel?`<table class="dinv"><tr><th>Invoice asociado</th><th>Total</th><th>Estado</th></tr><tr><td>${esc(invRel.numero)}</td><td>${fmt$(invRel.total)}</td><td>${ESTADO_LBL[invRel.estado]}</td></tr></table>`:''}
+    ${l.notas?`<div class="dbox" style="margin-top:14px"><b>Notas / soporte:</b> ${esc(l.notas)}</div>`:''}
+    <div class="dfoot"><b>ProtectGo Services</b> · +1 (210) 961-9194 · admin@protectgoservices.com<br>17685 Senior Rd, Unit 5, Von Ormy TX 78073-4279 · www.protectgoservices.com</div>
+  </div>`;
+  window.print();
+}
+
+/* ---------- SERVICIOS ---------- */
+function vServicios(){
+  return `
+  <div class="pg-eyebrow">Cobros externos · tarifas del director</div><h1>Servicios à la carte</h1>
+  <div class="pg-sub">One-time o por proyecto. El director ajusta los valores aquí y quedan guardados para todos.</div>
+  <div class="pg-card">
+    <table class="pg-table"><thead><tr><th>Servicio</th><th>Qué resuelve</th><th>Tipo</th><th>Precio</th><th>Máx (rango)</th><th></th></tr></thead><tbody>
+    ${SERVICIOS.map(s=>`<tr style="${s.activo?'':'opacity:.45'}">
+      <td style="font-weight:600;color:var(--pg-ink)">${esc(s.nombre)}</td>
+      <td style="font-size:12px;color:var(--pg-muted)">${esc(s.descripcion||'')}</td>
+      <td><span class="pg-pill ${s.tipo==='Operativo'?'fin':'n'}">${esc(s.tipo)}</span></td>
+      <td class="svc-price"><input type="number" step="1" value="${s.precio}" id="sp_${s.id}"></td>
+      <td class="svc-price"><input type="number" step="1" value="${s.precio_max??''}" id="sm_${s.id}" placeholder="—"></td>
+      <td style="white-space:nowrap"><button class="pg-btn sm mint" onclick="guardarServicio('${s.id}')">Guardar</button>
+      <button class="pg-btn sm secondary" onclick="toggleServicio('${s.id}',${!s.activo})">${s.activo?'Ocultar':'Activar'}</button></td></tr>`).join('')}
+    </tbody></table>
+  </div>
+  <div class="pg-card">
+    <h2>Nuevo servicio</h2>
+    <div class="frow">
+      <div class="field"><label>Nombre *</label><input id="nsNombre"></div>
+      <div class="field"><label>Qué resuelve</label><input id="nsDesc"></div>
+      <div class="field"><label>Tipo</label><select id="nsTipo"><option>Operativo</option><option value="Asesoria">Asesoría</option></select></div>
+    </div>
+    <div class="frow">
+      <div class="field"><label>Precio ($)</label><input id="nsPrecio" type="number"></div>
+      <div class="field"><label>Precio máx (opcional)</label><input id="nsMax" type="number"></div>
+      <div class="field" style="display:flex;align-items:flex-end"><button class="pg-btn" onclick="crearServicio()">Agregar <span class="a">→</span></button></div>
+    </div>
+  </div>`;
+}
+async function guardarServicio(id){
+  const precio=parseFloat($('sp_'+id).value)||0;
+  const maxv=$('sm_'+id).value; const precio_max=maxv===''?null:parseFloat(maxv);
+  const {error}=await sb.from('amazon_servicios').update({precio,precio_max}).eq('id',id);
+  if(error) return toast('Error: '+error.message);
+  await evento('nota',`Tarifa actualizada: ${SERVICIOS.find(s=>s.id===id)?.nombre} → ${fmt$(precio)}${precio_max?'–'+fmt$(precio_max):''}`);
+  toast('Tarifa guardada');await loadAll();render();
+}
+async function toggleServicio(id,activo){
+  await sb.from('amazon_servicios').update({activo}).eq('id',id);
+  await loadAll();render();
+}
+async function crearServicio(){
+  const nombre=$('nsNombre').value.trim();if(!nombre)return toast('Falta el nombre');
+  const {error}=await sb.from('amazon_servicios').insert({nombre,descripcion:$('nsDesc').value.trim()||null,tipo:$('nsTipo').value,precio:parseFloat($('nsPrecio').value)||0,precio_max:$('nsMax').value?parseFloat($('nsMax').value):null,orden:SERVICIOS.length+1});
+  if(error) return toast('Error: '+error.message);
+  toast('Servicio agregado');await loadAll();render();
+}
+
+/* ---------- INVOICES ---------- */
+function rowInvoice(i){
+  return `<tr><td class="num">${esc(i.numero)}</td><td>${fmtD(i.fecha)}</td><td class="num" style="text-align:right">${fmt$(i.total)}</td><td>${pill(i.estado)}</td>
+  <td style="white-space:nowrap"><button class="pg-btn sm secondary" onclick="imprimirInvoice('${i.id}')">🖨 Ver / PDF</button>
+  ${i.estado==='por_cobrar'?`<button class="pg-btn sm mint" onclick="marcarPagado('${i.id}')">Pagado ✓</button>`:''}</td></tr>`;
+}
+function vInvoices(){
+  return `
+  <div class="pg-eyebrow">Facturación</div><h1>Invoices</h1>
+  <div class="pg-sub">Numeración automática OP-${new Date().getFullYear()}-### · plantilla oficial Operyx x ProtectGo.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Invoices emitidos</h2>
+      <table class="pg-table"><thead><tr><th>Número</th><th>Cliente</th><th>Fecha</th><th style="text-align:right">Total</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${INVOICES.map(i=>`<tr><td class="num">${esc(i.numero)}</td><td><span class="linkish" onclick="abrirCliente('${i.cliente_id}')">${esc(cliName(i.cliente_id))}</span></td><td>${fmtD(i.fecha)}</td><td class="num" style="text-align:right">${fmt$(i.total)}</td><td>${pill(i.estado)}</td>
+      <td style="white-space:nowrap"><button class="pg-btn sm secondary" onclick="imprimirInvoice('${i.id}')">🖨</button>
+      ${i.estado==='por_cobrar'?`<button class="pg-btn sm mint" onclick="marcarPagado('${i.id}')">✓</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" style="color:var(--pg-muted)">Sin invoices aún.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Invoice suelto</h2><div class="h2sub"><b>Uso normal:</b> botón 🧾 en la lista de Cobros — se genera solo, sin llenar nada. Usa este formulario SOLO si necesitas un invoice sin un cobro registrado.</div>
+      <div class="field"><label>Cliente *</label><select id="ivCliente">${CLIENTES.map(c=>`<option value="${c.id}">${esGuia(c)?'🧭 ':''}${esc(c.empresa)}</option>`).join('')}</select></div>
+      <div class="field"><label>Descripción del servicio *</label><textarea id="ivDesc" rows="2" placeholder="Compliance Management Service / Operational Rescue: Amazon Relay/Business Recovery"></textarea></div>
+      <div class="frow">
+        <div class="field"><label>Cantidad</label><input id="ivQty" type="number" value="1"></div>
+        <div class="field"><label>Unit Rate ($)</label><input id="ivRate" type="number" step="0.01"></div>
+        <div class="field"><label>Método de pago</label><input id="ivMetodo" placeholder="Zelle / Card / ACH"></div>
+      </div>
+      <div class="field"><label><input type="checkbox" id="ivFee" style="width:auto;margin-right:6px">Aplicar Administrative Processing Fee 3.9% (plataforma de pago)</label></div>
+      <button class="pg-btn" onclick="crearInvoice()">Generar invoice <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+async function crearInvoice(extra){
+  const cliente_id=extra?.cliente_id||$('ivCliente')?.value;
+  const desc=extra?.desc||$('ivDesc')?.value.trim();
+  const qty=extra?.qty??(parseFloat($('ivQty')?.value)||1);
+  const rate=extra?.rate??(parseFloat($('ivRate')?.value)||0);
+  const metodo=extra?.metodo??($('ivMetodo')?.value.trim()||null);
+  const conFee=extra?.fee??($('ivFee')?.checked||false);
+  if(!cliente_id||!desc||!rate) return toast('Falta cliente, descripción o tarifa');
+  const subtotal=qty*rate;
+  const fee=conFee? Math.round(subtotal*0.039*100)/100 : 0;
+  const items=[{descripcion:desc,qty,rate,total:subtotal}];
+  if(conFee) items.push({descripcion:'Administrative Processing Fee: Applicable for the use of the payment platform (3.9%).',qty:1,rate:fee,total:fee});
+  const row={cliente_id,cobro_id:extra?.cobro_id||null,metodo_pago:metodo,items,subtotal,fee_pct:conFee?3.9:0,fee,total:subtotal+fee,created_by:ME.email};
+  const {data,error}=await sb.from('amazon_invoices').insert(row).select().single();
+  if(error) return toast('Error: '+error.message);
+  await evento('invoice_generado',`Invoice ${data.numero} · ${fmt$(data.total)}`,{cliente_id,invoice_id:data.id});
+  toast('Invoice '+data.numero+' generado');
+  await loadAll();render();imprimirInvoice(data.id);
+}
+function invoiceDesdeCobro(cobroId){
+  const c=COBROS.find(x=>x.id===cobroId);if(!c)return;
+  const per=c.periodo_desde?` (${fmtD(c.periodo_desde)} – ${fmtD(c.periodo_hasta)})`:'';
+  crearInvoice({cliente_id:c.cliente_id,desc:(c.tipo==='semanal'?'Dispatching Service — Amazon Relay: ':'Service / Management: ')+c.concepto+per,qty:1,rate:Number(c.monto),fee:false,cobro_id:cobroId,metodo:null});
+}
+async function marcarPagado(id){
+  await sb.from('amazon_invoices').update({estado:'pagado'}).eq('id',id);
+  const i=INVOICES.find(x=>x.id===id);
+  await evento('cambio_estado',`Invoice ${i?.numero} marcado PAGADO`,{cliente_id:i?.cliente_id,invoice_id:id});
+  toast('Invoice pagado');await loadAll();render();
+}
+function imprimirInvoice(id){
+  const i=INVOICES.find(x=>x.id===id);if(!i)return;
+  const c=cli(i.cliente_id)||{};
+  const items=(i.items||[]).map(it=>`<tr>
+    <td><b>Service / Management Description:</b><br>${esc(it.descripcion)}</td>
+    <td class="c">${it.qty}</td><td class="c">${fmt$(it.rate)} USD</td><td class="c">${fmt$(it.total)} USD</td></tr>`).join('');
+  $('printArea').innerHTML=`
+  <div class="pgprint pgprint-page">
+    <div class="hdr"><div class="brand">Protect<span class="go">GO</span> <span style="font-size:12px;color:#777">· Operyx Group</span></div></div>
+    <h1>INVOICE</h1>
+    <div class="meta">
+      <div><b>Invoice Issue #:</b> ${esc(i.numero)}<br><b>Date:</b> ${fmtD(i.fecha)}<br><b>Payment Method:</b> ${esc(i.metodo_pago||'')}</div>
+      <div class="r"><b>CLIENT INFORMATION:</b><br><b>Company:</b> ${esc(c.empresa||'')}${c.dba?' DBA: '+esc(c.dba):''}<br><b>Legal Representative:</b> ${esc(c.representante||'')}<br><b>USDOT #:</b> ${esc(c.dot||'')}</div>
+    </div>
+    <table class="inv">
+      <tr><th>SERVICES DETAILED:</th><th>Quantity:</th><th>Unit Rate:</th><th>Total</th></tr>
+      ${items}
+      <tr class="totrow"><td colspan="3" style="text-align:right"><b>TOTAL</b></td><td class="c"><b>${fmt$(i.total)} USD</b></td></tr>
+    </table>
+    <div class="terms">
+      <h3>SERVICE TERMS AND CONDITIONS</h3>
+      <ol>
+        <li><b>Nature of Management:</b> The fee charged exclusively covers professional fees for the document audit, technical analysis of the case, defense structuring, and the application process before the corresponding platform (Amazon Relay / FMCSA).</li>
+        <li><b>Results Disclaimer:</b> The client accepts that the payment corresponds to specialized management and advisory work. Operyx and ProtectGo do not guarantee a favorable resolution or final activation by Amazon Relay or government entities, as the ultimate decision rests strictly with their compliance analysts.</li>
+        <li><b>Refund Policy:</b> Being an On-Demand specialized service executed immediately, this payment is considered final and non-refundable.</li>
+      </ol>
+    </div>
+    <div class="footline">Operyx Group &amp; ProtectGo — We run operations. You scale.</div>
+  </div>`;
+  window.print();
+}
+</script>
+</body>
+</html>
