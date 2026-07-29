@@ -151,7 +151,8 @@ body{margin:0;background:var(--pg-bg);color:var(--pg-txt);font-family:var(--pg-f
     <a data-v="clientes" onclick="nav('clientes')">👤 Clientes</a>
     <a data-v="loads" onclick="nav('loads')">📸 Cargar viaje</a>
     <a data-v="cobros" onclick="nav('cobros')">💵 Cobros</a>
-    <a data-v="servicios" onclick="nav('servicios')">🛠 Servicios</a>
+    <a data-v="servpro" onclick="nav('servpro')">🧩 Servicios Profesionales</a>
+    <a data-v="servicios" onclick="nav('servicios')">🛠 Tarifario</a>
     <a data-v="invoices" onclick="nav('invoices')">🧾 Invoices</a>
     <a data-v="reportes" onclick="nav('reportes')">📊 Reportes</a>
     <div class="pg-foot">
@@ -860,6 +861,1530 @@ function imprimirInvoice(id){
   </div>`;
   window.print();
 }
+
+
+/* ================================================================
+   AMAZON RELAY v4 — bloques integrados (00-core.js · 10-clientes.js · 20-loads.js · 30-cobros.js · 40-servpro.js · 50-invoices.js)
+   Las funciones aqui declaradas REEMPLAZAN a las del v3 de arriba.
+   ================================================================ */
+
+/* ---------- 00-core.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · CORE (spine)
+   Redefine loadAll/render, agrega estado global nuevo, el modal de
+   confirmacion y los helpers de esquema de cobro.
+   NINGUNA otra parte puede redeclarar loadAll(), render() ni nav().
+   ================================================================== */
+
+var SERVPRO = [], SERVPRO_NOTAS = [], SERVPRO_DETALLE = null;
+var EDIT = { cliente: null, load: null, cobro: null, servpro: null, invoice: null };
+var CLI_FILTRO = 'todos';
+
+/* ---------- estados de Servicios Profesionales ---------- */
+var SP_ESTADOS = ['Pendiente', 'En proceso', 'Sometido a revisión', 'Completado', 'Cancelado/Fallido'];
+var SP_COBRO_ESTADOS = ['Pendiente de facturar', 'Facturado', 'Pagado'];
+var SP_CLS = { 'Pendiente': 'n', 'En proceso': 'warn', 'Sometido a revisión': 'fin', 'Completado': 'ok', 'Cancelado/Fallido': 'due' };
+var SPC_CLS = { 'Pendiente de facturar': 'n', 'Facturado': 'warn', 'Pagado': 'ok' };
+var spPill = e => `<span class="pg-pill ${SP_CLS[e] || 'n'}">${esc(e)}</span>`;
+var spcPill = e => `<span class="pg-pill ${SPC_CLS[e] || 'n'}">${esc(e)}</span>`;
+
+/* ---------- DATA v4 ---------- */
+async function loadAll() {
+  const [c, s, co, inv, ld, rg, rp, sp, spn] = await Promise.all([
+    sb.from('amazon_clientes').select('*').order('empresa'),
+    sb.from('amazon_servicios').select('*').order('orden'),
+    sb.from('amazon_cobros').select('*').order('created_at', { ascending: false }),
+    sb.from('amazon_invoices').select('*').order('numero_seq', { ascending: false }),
+    sb.from('amazon_loads').select('*').order('created_at', { ascending: false }),
+    sb.from('amazon_reglas_reparto').select('*').order('tipo'),
+    sb.from('amazon_repartos').select('*').order('created_at', { ascending: false }),
+    sb.from('amazon_servicios_pro').select('*').order('created_at', { ascending: false }),
+    sb.from('amazon_servicios_pro_notas').select('*').order('created_at', { ascending: false }),
+  ]);
+  CLIENTES = c.data || []; SERVICIOS = s.data || []; COBROS = co.data || []; INVOICES = inv.data || [];
+  LOADS = ld.data || []; REGLAS = rg.data || []; REPARTOS = rp.data || [];
+  SERVPRO = sp.data || []; SERVPRO_NOTAS = spn.data || [];
+}
+
+/* ---------- RENDER v4 ---------- */
+function render() {
+  const M = $('main');
+  if (VIEW === 'resumen') M.innerHTML = vResumen();
+  else if (VIEW === 'clientes') M.innerHTML = DETALLE ? vClienteDetalle(DETALLE) : vClientes();
+  else if (VIEW === 'loads') M.innerHTML = vLoads();
+  else if (VIEW === 'cobros') M.innerHTML = vCobros();
+  else if (VIEW === 'servpro') M.innerHTML = SERVPRO_DETALLE ? vServproDetalle(SERVPRO_DETALLE) : vServpro();
+  else if (VIEW === 'servicios') M.innerHTML = vServicios();
+  else if (VIEW === 'invoices') M.innerHTML = vInvoices();
+  else if (VIEW === 'reportes') M.innerHTML = vReportes();
+  if (VIEW === 'loads') setupPasteZone();
+  if (VIEW === 'clientes' && !DETALLE) cargarDirectorio();
+  if (typeof postRender === 'function') { try { postRender(); } catch (e) { console.warn(e); } }
+}
+
+/* nav v4: limpia modos de edicion y el detalle de servicios pro */
+function nav(v) {
+  VIEW = v; DETALLE = null; SERVPRO_DETALLE = null;
+  EDIT = { cliente: null, load: null, cobro: null, servpro: null, invoice: null };
+  document.querySelectorAll('.pg-side a').forEach(a => a.classList.toggle('on', a.dataset.v === v));
+  render();
+}
+
+/* ---------- MODAL DE CONFIRMACION (compartido por todos los modulos) ----------
+   pgConfirm({titulo, cuerpo, aviso, textoBoton, peligro, onOk, extra})
+   - cuerpo/aviso aceptan HTML (ya escapado por quien llama)
+   - onOk: funcion (puede ser async). El modal se cierra al terminar.
+   - extra: HTML adicional dentro del modal (checkboxes de cascada, etc.)
+   pgConfirmChecked('id') -> true/false para leer checkboxes puestos en extra
+------------------------------------------------------------------------------ */
+(function () {
+  if (document.getElementById('pgv4Style')) return;
+  var st = document.createElement('style');
+  st.id = 'pgv4Style';
+  st.textContent = [
+    '.pgm-ov{position:fixed;inset:0;z-index:2000;background:rgba(0,30,38,.62);display:flex;align-items:center;justify-content:center;padding:18px}',
+    '.pgm-card{background:#fff;border-radius:14px;max-width:520px;width:100%;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,.28);max-height:88vh;overflow:auto}',
+    '.pgm-card h3{margin:0 0 10px;font-size:17px;color:var(--pg-ink,#002F3D);font-family:Montserrat,Arial,sans-serif}',
+    '.pgm-card .pgm-body{font-size:13.2px;line-height:1.65;color:var(--pg-txt,#333);margin-bottom:14px}',
+    '.pgm-warn{background:#FFF6E5;border:1px solid #F0C36D;border-radius:9px;padding:10px 12px;font-size:12.4px;color:#7a5600;margin-bottom:14px}',
+    '.pgm-guia{background:#F2FBF8;border:1px dashed var(--pg-mint,#229A82);border-radius:9px;padding:10px 12px;font-size:12.4px;color:#12604f;margin-bottom:14px}',
+    '.pgm-extra{margin-bottom:14px;font-size:12.6px;color:var(--pg-txt,#333)}',
+    '.pgm-extra label{display:flex;align-items:flex-start;gap:7px;margin:7px 0;font-weight:500;text-transform:none;letter-spacing:0}',
+    '.pgm-extra input[type=checkbox]{width:auto;margin-top:2px}',
+    '.pgm-actions{display:flex;gap:9px;justify-content:flex-end}',
+    '.pgm-btn{padding:9px 16px;border:none;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;font-family:Inter,Arial,sans-serif}',
+    '.pgm-btn.cancel{background:#eef2f4;color:#44606c}',
+    '.pgm-btn.danger{background:#C0392B;color:#fff}',
+    '.pgm-btn.ok{background:var(--pg-mint,#229A82);color:#fff}',
+    '.pgm-btn:disabled{opacity:.6;cursor:wait}',
+    '.pg-editbar{background:#FFF6E5;border:1px solid #F0C36D;border-radius:10px;padding:8px 12px;font-size:12.4px;color:#7a5600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px}',
+    '.pg-actbtn{background:none;border:none;cursor:pointer;font-size:14px;padding:2px 4px;line-height:1;opacity:.75}',
+    '.pg-actbtn:hover{opacity:1}',
+    '.pg-chipset{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}',
+    '.pg-chip{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:20px;background:#EEF5F8;color:#2b5a6b;white-space:nowrap}',
+    '.pg-chip.disp{background:#E8F5F1;color:#12604f}',
+    '.pg-chip.svc{background:#F3EEFA;color:#5b3a94}',
+    '.pg-chip.due{background:#FDECEA;color:#9b2c1f}',
+    '.pg-chip.warn{background:#FFF6E5;color:#7a5600}',
+    '.pg-preset{cursor:pointer;border:1px solid var(--pg-line,#dbe4e8);background:#fff;border-radius:20px;padding:4px 11px;font-size:11.5px;font-weight:600;color:#2b5a6b}',
+    '.pg-preset:hover{border-color:var(--pg-mint,#229A82);color:#12604f;background:#F2FBF8}',
+    '.pg-loadpick{max-height:230px;overflow:auto;border:1px solid var(--pg-line,#dbe4e8);border-radius:10px;padding:6px 8px;background:#fff}',
+    '.pg-loadpick label{display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #f0f4f6;font-size:12.2px;font-weight:500;text-transform:none;letter-spacing:0;cursor:pointer}',
+    '.pg-loadpick label:last-child{border-bottom:none}',
+    '.pg-loadpick input[type=checkbox]{width:auto;margin:0}',
+    '.pg-desglose{background:#F2FBF8;border:1px dashed var(--pg-mint,#229A82);border-radius:9px;padding:8px 11px;font-size:11.8px;color:#12604f;margin-top:6px;line-height:1.55}',
+    '.pg-tl{border-left:2px solid var(--pg-line,#dbe4e8);margin-left:6px;padding-left:14px}',
+    '.pg-tl .it{position:relative;padding-bottom:13px;font-size:12.6px;color:var(--pg-txt,#333)}',
+    '.pg-tl .it:before{content:"";position:absolute;left:-20px;top:5px;width:8px;height:8px;border-radius:50%;background:var(--pg-mint,#229A82)}',
+    '.pg-tl .w{font-size:10.8px;color:var(--pg-muted,#8da0ad);margin-top:2px}'
+  ].join('');
+  document.head.appendChild(st);
+})();
+
+var _pgOnOk = null;
+function pgConfirm(o) {
+  o = o || {};
+  _pgOnOk = o.onOk || null;
+  var ov = document.getElementById('pgmOv');
+  if (ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = 'pgmOv'; ov.className = 'pgm-ov';
+  ov.innerHTML = '<div class="pgm-card">' +
+    '<h3>' + (o.titulo || '¿Confirmas?') + '</h3>' +
+    '<div class="pgm-body">' + (o.cuerpo || '') + '</div>' +
+    (o.guia ? '<div class="pgm-guia">🧭 ' + o.guia + '</div>' : '') +
+    (o.aviso ? '<div class="pgm-warn">⚠️ ' + o.aviso + '</div>' : '') +
+    (o.extra ? '<div class="pgm-extra">' + o.extra + '</div>' : '') +
+    '<div class="pgm-actions">' +
+    '<button class="pgm-btn cancel" type="button" onclick="pgCerrarModal()">' + (o.textoCancelar || 'Cancelar') + '</button>' +
+    (o.onOk ? '<button class="pgm-btn ' + (o.peligro === false ? 'ok' : 'danger') + '" type="button" id="pgmOk">' + (o.textoBoton || 'Sí, eliminar') + '</button>' : '') +
+    '</div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click', function (e) { if (e.target === ov) pgCerrarModal(); });
+  var btn = document.getElementById('pgmOk');
+  if (btn) btn.addEventListener('click', async function () {
+    btn.disabled = true; btn.textContent = 'Procesando…';
+    try { if (_pgOnOk) await _pgOnOk(); } catch (err) { toast('Error: ' + (err.message || err)); }
+    pgCerrarModal();
+  });
+}
+function pgCerrarModal() { _pgOnOk = null; var ov = document.getElementById('pgmOv'); if (ov) ov.remove(); }
+function pgConfirmChecked(id) { var el = document.getElementById(id); return !!(el && el.checked); }
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pgCerrarModal(); });
+
+/* ---------- HELPERS DE ESQUEMA DE COBRO ----------
+   calcMontoEsquema(cliente, grossTotal) -> {monto, desglose, base}
+   esquemaLabel(cliente) -> texto corto para chips ("Fija $150", "9% con piso $100×2")
+------------------------------------------------------------------- */
+function calcMontoEsquema(c, gross) {
+  gross = Number(gross) || 0;
+  const tipo = (c && c.esquema_tipo) || 'fija';
+  if (tipo === 'porcentaje') {
+    const pct = Number(c.esquema_pct) || 0;
+    const m = Math.round(pct * gross) / 100;
+    return { monto: m, base: 'porcentaje', desglose: `${pct}% de ${fmt$(gross)} = ${fmt$(m)}` };
+  }
+  if (tipo === 'porcentaje_piso') {
+    const pct = Number(c.esquema_pct) || 0, piso = Number(c.esquema_piso) || 0, u = Number(c.unidades_activas) || 1;
+    const porPct = Math.round(pct * gross) / 100;
+    const porPiso = Math.round(piso * u * 100) / 100;
+    const m = Math.max(porPct, porPiso);
+    return {
+      monto: m, base: porPiso > porPct ? 'piso' : 'porcentaje',
+      desglose: `${pct}% de ${fmt$(gross)} = ${fmt$(porPct)} · piso ${fmt$(piso)} × ${u} unidad${u === 1 ? '' : 'es'} = ${fmt$(porPiso)} → se cobra <b>${fmt$(m)}</b> (${porPiso > porPct ? 'gana el piso' : 'gana el %'})`
+    };
+  }
+  const m = Number(c && c.tarifa_semanal) || 0;
+  return { monto: m, base: 'fija', desglose: `Tarifa fija ${fmt$(m)}` };
+}
+function esquemaLabel(c) {
+  if (!c) return '—';
+  const t = c.esquema_tipo || 'fija';
+  if (t === 'porcentaje') return `${Number(c.esquema_pct) || 0}% del gross`;
+  if (t === 'porcentaje_piso') return `${Number(c.esquema_pct) || 0}% con piso ${fmt$(c.esquema_piso || 0)} × ${Number(c.unidades_activas) || 1}`;
+  return `Fija ${fmt$(c.tarifa_semanal || 0)}`;
+}
+/* Nivel comercial derivado del esquema (solo etiqueta, no se guarda) */
+function nivelCliente(c) {
+  if (!c) return '';
+  const t = c.esquema_tipo || 'fija';
+  if (t === 'fija') {
+    const v = Number(c.tarifa_semanal) || 0;
+    if (v === 70) return 'Nivel 1';
+    if (v === 150) return 'Nivel 2';
+    return '';
+  }
+  return 'Nivel 3';
+}
+
+/* ---------- HELPERS COMPARTIDOS DE LOADS/COBROS ---------- */
+const loadsDeCobro = cobroId => LOADS.filter(l => l.cobro_id === cobroId);
+const grossDeCobro = cobroId => loadsDeCobro(cobroId).reduce((a, l) => a + (Number(l.tarifa) || 0), 0);
+const servproDeCliente = id => SERVPRO.filter(s => s.cliente_id === id);
+const esGuiaLoad = l => (l && (l.load_id_externo || '').toUpperCase().indexOf('EJEMPLO') >= 0) || (l && esGuia(cli(l.cliente_id)));
+const esGuiaCobro = c => !!(c && esGuia(cli(c.cliente_id)));
+
+/* Registra evento de auditoria (editado / eliminado) — usa la tabla que ya existe */
+async function eventoAudit(tipo, detalle, ids) {
+  try { await sb.from('amazon_eventos').insert(Object.assign({ tipo, detalle, quien: ME ? ME.email : null }, ids || {})); }
+  catch (e) { console.warn('evento', e); }
+}
+
+/* Barra visible de "estás editando" para reutilizar en los formularios */
+function editBar(modulo, etiqueta) {
+  return `<div class="pg-editbar"><span>✏️ Editando: <b>${esc(etiqueta)}</b></span><span class="linkish" onclick="cancelarEdicion('${modulo}')">cancelar edición</span></div>`;
+}
+function cancelarEdicion(modulo) { EDIT[modulo] = null; render(); }
+
+
+/* ---------- 10-clientes.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · MODULO A — CLIENTES
+   CRUD + esquemas de cobro + clasificacion (chips + filtro)
+   Declara SOLO: vClientes, vClienteDetalle, crearCliente, editarCliente,
+   eliminarCliente, esquemaTipoChange, presetEsquema, setFiltroClientes,
+   chipsCliente
+   ================================================================== */
+
+/* ---------- helpers privados del modulo (var, no pisan nada) ---------- */
+var _cliEsDispatch = c => LOADS.some(l => l.cliente_id === c.id)
+  || COBROS.some(co => co.cliente_id === c.id && co.tipo === 'semanal')
+  || (c.esquema_tipo && c.esquema_tipo !== 'fija')
+  || Number(c.tarifa_semanal) > 0;
+var _cliEsServicios = c => SERVPRO.some(s => s.cliente_id === c.id);
+var _cliFiltroPasa = c => {
+  if (CLI_FILTRO === 'todos') return true;
+  const d = _cliEsDispatch(c), s = _cliEsServicios(c);
+  if (CLI_FILTRO === 'dispatching') return d;
+  if (CLI_FILTRO === 'servicios') return s;
+  if (CLI_FILTRO === 'ambos') return d && s;
+  return true;
+};
+var _cliEsqObjDeForm = () => ({
+  esquema_tipo: ($('ncEsquema') && $('ncEsquema').value) || 'fija',
+  esquema_pct: parseFloat($('ncPct') && $('ncPct').value) || 0,
+  esquema_piso: parseFloat($('ncPiso') && $('ncPiso').value) || 0,
+  unidades_activas: parseInt($('ncUnidades') && $('ncUnidades').value, 10) || 1,
+  tarifa_semanal: parseFloat($('ncTarifa') && $('ncTarifa').value) || 0
+});
+
+/* ---------- CLASIFICACION: chips + filtro ---------- */
+function chipsCliente(c) {
+  const chips = [];
+  if (_cliEsDispatch(c)) {
+    const niv = nivelCliente(c);
+    chips.push(`<span class="pg-chip disp">🚛 Dispatching · ${esc(esquemaLabel(c))}${niv ? ' · ' + esc(niv) : ''}</span>`);
+  }
+  const porTipo = {};
+  servproDeCliente(c.id).forEach(s => {
+    const prev = porTipo[s.tipo_servicio];
+    if (!prev || new Date(s.created_at) > new Date(prev.created_at)) porTipo[s.tipo_servicio] = s;
+  });
+  Object.values(porTipo).forEach(s => {
+    let cls = 'svc';
+    if (s.estado === 'Cancelado/Fallido') cls = 'due';
+    else if (s.estado === 'En proceso' || s.estado === 'Sometido a revisión') cls = 'warn';
+    chips.push(`<span class="pg-chip ${cls}">🧩 ${esc(s.tipo_servicio)} · ${esc(s.estado)}</span>`);
+  });
+  if (!chips.length) chips.push('<span class="pg-chip">Sin clasificar</span>');
+  return `<div class="pg-chipset">${chips.join('')}</div>`;
+}
+function setFiltroClientes(f) { CLI_FILTRO = f; render(); }
+
+/* ---------- LIBRO DE CLIENTES + FORMULARIO ---------- */
+function vClientes() {
+  const editC = EDIT.cliente ? cli(EDIT.cliente) : null;
+  const lista = CLIENTES.filter(_cliFiltroPasa);
+  const filtros = [['todos', 'Todos'], ['dispatching', 'Dispatching'], ['servicios', 'Servicios externos'], ['ambos', 'Ambos']];
+  const tipo0 = editC ? (editC.esquema_tipo || 'fija') : 'fija';
+  const esq0 = editC || {};
+  const desglose0 = calcMontoEsquema(esq0.esquema_tipo ? esq0 : { esquema_tipo: 'fija', tarifa_semanal: esq0.tarifa_semanal || 0 }, 3000).desglose;
+  return `
+  <div class="pg-eyebrow">Trazabilidad</div><h1>Clientes</h1>
+  <div class="pg-sub">Cada cliente con su contrato, códigos y su historial completo.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de clientes</h2><div class="h2sub">Clic en un cliente para ver su trazabilidad.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        ${filtros.map(([k, l]) => `<button type="button" class="pg-preset" style="${CLI_FILTRO === k ? 'background:var(--pg-mint);color:#fff;border-color:var(--pg-mint)' : ''}" onclick="setFiltroClientes('${k}')">${l}</button>`).join('')}
+      </div>
+      <table class="pg-table"><thead><tr><th>Empresa</th><th>DOT #</th><th>Contrato</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${lista.map(c => `<tr${esGuia(c) ? ' style="background:#F2FBF8"' : ''}><td><span class="linkish" onclick="abrirCliente('${c.id}')">${esc(c.empresa)}</span>${esGuia(c) ? ' <span class="pg-pill fin">GUÍA</span>' : ''}${c.dba ? `<div style="font-size:11px;color:var(--pg-muted)">DBA: ${esc(c.dba)}</div>` : ''}${chipsCliente(c)}</td><td class="num">${esc(c.dot || '—')}</td><td>${esc(c.contrato || '—')}</td><td>${pill(c.estado)}</td><td style="white-space:nowrap"><button class="pg-actbtn" title="Editar" onclick="editarCliente('${c.id}')">✏️</button><button class="pg-actbtn" title="Eliminar" onclick="eliminarCliente('${c.id}')">🗑️</button></td></tr>`).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin clientes en este filtro.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>${editC ? 'Editar cliente' : 'Registrar cliente'}</h2><div class="h2sub">Si el cliente ya existe en la agencia, escógelo en el directorio y los datos se llenan solos. Solo Empresa, DOT y Contrato son lo mínimo — el resto es opcional.</div>
+      ${editC ? editBar('cliente', editC.empresa) : ''}
+      <div class="field" style="background:#F2FBF8;border:1px dashed var(--pg-mint);border-radius:10px;padding:10px 12px"><label>🔎 Directorio de la agencia <span style="font-weight:400;text-transform:none">(clientes ya cotizados por los agentes)</span></label><select id="dirSel" onchange="dirAutofill()"><option value="">Cargando directorio…</option></select></div>
+      <div class="field"><label>Empresa * <span style="font-weight:400;text-transform:none">(nombre tal cual en el correo)</span></label><input id="ncEmpresa" value="${editC ? esc(editC.empresa) : ''}" placeholder="Ej: EL POTRILLO TRANSPORTATION LLC"></div>
+      <div class="frow2">
+        <div class="field"><label>DOT #</label><input id="ncDot" value="${editC ? esc(editC.dot || '') : ''}" placeholder="Ej: 4357113"></div>
+        <div class="field"><label>Contrato</label><input id="ncContrato" value="${editC ? esc(editC.contrato || '') : ''}" placeholder="Ej: Dispatching semanal"></div>
+      </div>
+      <div class="field"><label>Códigos internos <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncCodigos" value="${editC ? esc(editC.codigos || '') : ''}" placeholder="Código interno del cliente, si aplica"></div>
+      <div class="frow2">
+        <div class="field"><label>DBA <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncDba" value="${editC ? esc(editC.dba || '') : ''}" placeholder="Nombre comercial, si es distinto"></div>
+        <div class="field"><label>MC # <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncMc" value="${editC ? esc(editC.mc || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Representante legal <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncRep" value="${editC ? esc(editC.representante || '') : ''}"></div>
+        <div class="field"><label>Teléfono <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncTel" value="${editC ? esc(editC.telefono || '') : ''}"></div>
+      </div>
+      <div class="field"><label>Email <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ncEmail" value="${editC ? esc(editC.email || '') : ''}"></div>
+
+      <div class="field"><label>Esquema de cobro</label>
+        <select id="ncEsquema" onchange="esquemaTipoChange()">
+          <option value="fija" ${tipo0 === 'fija' ? 'selected' : ''}>Tarifa fija (USD)</option>
+          <option value="porcentaje" ${tipo0 === 'porcentaje' ? 'selected' : ''}>Porcentaje (%)</option>
+          <option value="porcentaje_piso" ${tipo0 === 'porcentaje_piso' ? 'selected' : ''}>Porcentaje con piso</option>
+        </select>
+      </div>
+      <div id="blkFija" class="field ${tipo0 !== 'fija' ? 'hidden' : ''}">
+        <label>Tarifa semanal $</label><input id="ncTarifa" type="number" step="0.01" value="${editC && editC.tarifa_semanal ? editC.tarifa_semanal : ''}" oninput="esquemaTipoChange()">
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+          <button class="pg-preset" type="button" onclick="presetEsquema('n1')">Nivel 1 · $70</button>
+          <button class="pg-preset" type="button" onclick="presetEsquema('n2')">Nivel 2 · $150</button>
+        </div>
+      </div>
+      <div id="blkPct" class="field ${tipo0 === 'fija' ? 'hidden' : ''}">
+        <label>Porcentaje del gross %</label><input id="ncPct" type="number" step="0.01" value="${editC && editC.esquema_pct ? editC.esquema_pct : ''}" oninput="esquemaTipoChange()">
+        <div style="margin-top:6px"><button class="pg-preset" type="button" onclick="presetEsquema('n3')">Nivel 3 · 9%</button></div>
+      </div>
+      <div id="blkPiso" class="field ${tipo0 !== 'porcentaje_piso' ? 'hidden' : ''}">
+        <div class="frow2">
+          <div class="field"><label>Piso por unidad $</label><input id="ncPiso" type="number" step="0.01" value="${editC && editC.esquema_piso ? editC.esquema_piso : ''}" oninput="esquemaTipoChange()"></div>
+          <div class="field"><label># Camiones activos</label><input id="ncUnidades" type="number" value="${editC && editC.unidades_activas ? editC.unidades_activas : 1}" oninput="esquemaTipoChange()"></div>
+        </div>
+        <button class="pg-preset" type="button" onclick="presetEsquema('n3piso')">Nivel 3 · 9% con piso $100/unidad</button>
+      </div>
+      <div class="pg-desglose" id="ncDesglose">${desglose0}</div>
+
+      <div class="field" style="margin-top:8px"><label>Notas <span style="font-weight:400;text-transform:none">(opcional)</span></label><textarea id="ncNotas" rows="2">${editC ? esc(editC.notas || '') : ''}</textarea></div>
+      <button class="pg-btn" onclick="crearCliente()">${editC ? 'Guardar cambios' : 'Registrar cliente'} <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+
+/* ---------- ESQUEMA: cambios en vivo + presets ---------- */
+function esquemaTipoChange() {
+  const sel = $('ncEsquema'); if (!sel) return;
+  const t = sel.value;
+  if ($('blkFija')) $('blkFija').classList.toggle('hidden', t !== 'fija');
+  if ($('blkPct')) $('blkPct').classList.toggle('hidden', t === 'fija');
+  if ($('blkPiso')) $('blkPiso').classList.toggle('hidden', t !== 'porcentaje_piso');
+  const r = calcMontoEsquema(_cliEsqObjDeForm(), 3000);
+  const d = $('ncDesglose'); if (d) d.innerHTML = `Con este esquema, una semana con gross de $3,000 se cobraría <b>${fmt$(r.monto)}</b>`;
+}
+function presetEsquema(k) {
+  if (!$('ncEsquema')) return;
+  if (k === 'n1') { $('ncEsquema').value = 'fija'; $('ncTarifa').value = 70; }
+  else if (k === 'n2') { $('ncEsquema').value = 'fija'; $('ncTarifa').value = 150; }
+  else if (k === 'n3') { $('ncEsquema').value = 'porcentaje'; $('ncPct').value = 9; }
+  else if (k === 'n3piso') { $('ncEsquema').value = 'porcentaje_piso'; $('ncPct').value = 9; $('ncPiso').value = 100; if (!$('ncUnidades').value) $('ncUnidades').value = 1; }
+  esquemaTipoChange();
+}
+
+/* ---------- CRUD ---------- */
+async function crearCliente() {
+  const empresa = $('ncEmpresa').value.trim();
+  if (!empresa) return toast('Falta la empresa');
+  const tipo = ($('ncEsquema') && $('ncEsquema').value) || 'fija';
+  const row = {
+    empresa, dba: $('ncDba').value.trim() || null, dot: $('ncDot').value.trim() || null, mc: $('ncMc').value.trim() || null,
+    representante: $('ncRep').value.trim() || null, telefono: $('ncTel').value.trim() || null, email: $('ncEmail').value.trim() || null,
+    contrato: $('ncContrato').value.trim() || null, codigos: $('ncCodigos').value.trim() || null, notas: $('ncNotas').value.trim() || null,
+    esquema_tipo: tipo,
+    esquema_pct: (tipo === 'porcentaje' || tipo === 'porcentaje_piso') ? (parseFloat($('ncPct').value) || 0) : null,
+    esquema_piso: tipo === 'porcentaje_piso' ? (parseFloat($('ncPiso').value) || 0) : null,
+    unidades_activas: tipo === 'porcentaje_piso' ? (parseInt($('ncUnidades').value, 10) || 1) : null,
+    tarifa_semanal: tipo === 'fija' ? (parseFloat($('ncTarifa').value) || 0) : null
+  };
+  const editId = EDIT.cliente;
+  let error, clienteId;
+  if (editId) {
+    const r = await sb.from('amazon_clientes').update(row).eq('id', editId).select().single();
+    error = r.error; clienteId = editId;
+  } else {
+    const r = await sb.from('amazon_clientes').insert(row).select().single();
+    error = r.error; clienteId = r.data && r.data.id;
+  }
+  if (error) return toast('Error: ' + error.message);
+  await eventoAudit(editId ? 'editado' : 'cliente_creado', (editId ? 'Cliente editado: ' : 'Cliente registrado: ') + empresa, { cliente_id: clienteId });
+  EDIT.cliente = null;
+  toast(editId ? 'Cliente actualizado' : 'Cliente registrado');
+  await loadAll(); render();
+}
+function editarCliente(id) { EDIT.cliente = id; DETALLE = null; render(); }
+
+async function eliminarCliente(id) {
+  const c = cli(id); if (!c) return;
+  const loadsN = LOADS.filter(l => l.cliente_id === id).length;
+  const cobrosN = COBROS.filter(x => x.cliente_id === id).length;
+  const invN = INVOICES.filter(x => x.cliente_id === id).length;
+  const spN = servproDeCliente(id).length;
+  const total = loadsN + cobrosN + invN + spN;
+  const guia = esGuia(c) ? 'Es el ejemplo guía del sistema — sirve de referencia para el equipo.' : undefined;
+  if (total > 0) {
+    const partes = [];
+    if (loadsN) partes.push(`${loadsN} viaje${loadsN === 1 ? '' : 's'}`);
+    if (cobrosN) partes.push(`${cobrosN} cobro${cobrosN === 1 ? '' : 's'}`);
+    if (invN) partes.push(`${invN} invoice${invN === 1 ? '' : 's'}`);
+    if (spN) partes.push(`${spN} servicio${spN === 1 ? '' : 's'} profesional${spN === 1 ? '' : 'es'}`);
+    pgConfirm({
+      titulo: 'Inactivar cliente', peligro: false, textoBoton: 'Inactivar cliente', guia,
+      cuerpo: `<b>${esc(c.empresa)}</b> tiene ${partes.join(', ')} vinculados. No se puede eliminar del todo — se marcará como <b>inactivo</b> y sigue visible en el libro de clientes.`,
+      onOk: async () => {
+        const { error } = await sb.from('amazon_clientes').update({ estado: 'inactivo' }).eq('id', id);
+        if (error) return toast('Error: ' + error.message);
+        await eventoAudit('editado', 'Cliente inactivado: ' + c.empresa, { cliente_id: id });
+        toast('Cliente inactivado'); await loadAll(); render();
+      }
+    });
+  } else {
+    pgConfirm({
+      titulo: 'Eliminar cliente', peligro: true, textoBoton: 'Sí, eliminar', guia,
+      cuerpo: `¿Eliminar a <b>${esc(c.empresa)}</b>? No tiene viajes, cobros, invoices ni servicios vinculados.`,
+      onOk: async () => {
+        const { error } = await sb.from('amazon_clientes').delete().eq('id', id);
+        if (error) return toast('Error: ' + error.message);
+        await eventoAudit('eliminado', 'Cliente eliminado: ' + c.empresa, { cliente_id: id });
+        toast('Cliente eliminado'); await loadAll(); render();
+      }
+    });
+  }
+}
+
+/* ---------- PERFIL DEL CLIENTE ---------- */
+function vClienteDetalle(id) {
+  const c = cli(id); if (!c) return vClientes();
+  const cobros = COBROS.filter(x => x.cliente_id === id);
+  const invs = INVOICES.filter(x => x.cliente_id === id);
+  const sp = servproDeCliente(id).slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const totalPagado = cobros.filter(x => ['fondos_validados', 'pagado'].includes(x.estado)).reduce((a, x) => a + Number(x.monto), 0);
+  return `
+  <div class="pg-eyebrow"><span class="linkish" onclick="nav('clientes')">← Clientes</span></div>
+  <h1>${esc(c.empresa)}</h1>
+  <div class="pg-sub">${c.dba ? 'DBA: ' + esc(c.dba) + ' · ' : ''}DOT # ${esc(c.dot || '—')} ${c.mc ? '· MC ' + esc(c.mc) : ''} · ${pill(c.estado)}</div>
+  ${chipsCliente(c)}
+  <div style="margin:10px 0 4px"><button class="pg-btn sm secondary" onclick="editarCliente('${id}')">✏️ Editar cliente</button></div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Contrato</div><div class="val" style="font-size:15px">${esc(c.contrato || '—')}</div><div class="sub">${esc(esquemaLabel(c))}</div></div>
+    <div class="pg-kpi"><div class="lbl">Total validado</div><div class="val">${fmt$(totalPagado)}</div><div class="sub">${cobros.length} cobros</div></div>
+    <div class="pg-kpi"><div class="lbl">Invoices</div><div class="val">${invs.length}</div><div class="sub">${invs.filter(i => i.estado === 'por_cobrar').length} por cobrar</div></div>
+    <div class="pg-kpi"><div class="lbl">Códigos</div><div class="val" style="font-size:14px">${esc(c.codigos || '—')}</div><div class="sub">Rep: ${esc(c.representante || '—')}</div></div>
+  </div>
+  <div class="two">
+    <div>
+      <div class="pg-card">
+        <h2>Cobros del cliente</h2><div class="h2sub">Su semana a semana.</div>
+        <table class="pg-table"><thead><tr><th>Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${cobros.map(rowCobro).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros.</td></tr>'}
+        </tbody></table>
+      </div>
+      <div class="pg-card">
+        <h2>Invoices del cliente</h2>
+        <table class="pg-table"><thead><tr><th>Número</th><th>Fecha</th><th style="text-align:right">Total</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${invs.map(rowInvoice).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin invoices.</td></tr>'}
+        </tbody></table>
+      </div>
+      <div class="pg-card">
+        <h2>Historial de servicios profesionales</h2><div class="h2sub">Casos gestionados fuera del dispatching semanal.</div>
+        <table class="pg-table"><thead><tr><th>Tipo de servicio</th><th>Fecha solicitud</th><th>Estado del caso</th><th style="text-align:right">Precio</th><th>Estado de cobro</th></tr></thead><tbody>
+        ${sp.map(s => `<tr><td><span class="linkish" onclick="abrirServpro('${s.id}')">${esc(s.tipo_servicio)}</span></td><td>${fmtD(s.fecha_solicitud)}</td><td>${spPill(s.estado)}</td><td class="num" style="text-align:right">${fmt$(s.precio)}</td><td>${spcPill(s.estado_cobro)}</td></tr>`).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin servicios profesionales para este cliente.</td></tr>'}
+        </tbody></table>
+      </div>
+    </div>
+    <div class="pg-card">
+      <h2>Trazabilidad</h2><div class="h2sub">Quién hizo qué y cuándo.</div>
+      ${(window._eventos || []).map(e => `<div class="evt"><div class="dot"></div><div><div>${esc(e.detalle || e.tipo)}</div><div class="w">${esc(e.quien || '')} · ${new Date(e.created_at).toLocaleString('es-CO')}</div></div></div>`).join('') || '<div style="color:var(--pg-muted);font-size:12.5px">Sin eventos.</div>'}
+      <div style="margin-top:12px"><input id="notaTxt" placeholder="Agregar nota…" style="width:100%;border:1px solid var(--pg-line);border-radius:9px;padding:8px 11px;font-size:13px"><button class="pg-btn sm" style="margin-top:8px" onclick="agregarNota('${id}')">Guardar nota</button></div>
+    </div>
+  </div>`;
+}
+
+/* ENTREGA:
+   Quedo funcionando: libro de clientes con filtro (Todos/Dispatching/Servicios externos/Ambos),
+   chips de clasificacion (dispatching + servicios profesionales agrupados por tipo), CRUD completo
+   (crear/editar/inactivar-o-eliminar con pgConfirm y reglas de integridad), bloque de esquema de
+   cobro con presets y desglose en vivo, perfil de cliente con historial de servicios profesionales
+   y boton de editar.
+   Funciones declaradas: vClientes, vClienteDetalle, crearCliente, editarCliente, eliminarCliente,
+   esquemaTipoChange, presetEsquema, setFiltroClientes, chipsCliente.
+   Supuestos: "tiene loads o cobros semanales o esquema configurado" para Dispatching tambien incluye
+   tarifa_semanal>0; abrirServpro() se asume declarada por el modulo D (no existe localmente).
+   TODO: no se valida duplicado de empresa al crear; el campo notas no se muestra en el perfil (v3 no
+   lo tenia expuesto ahi tampoco, se dejo igual). */
+
+
+/* ---------- 20-loads.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · MODULO B — CARGAR VIAJE / LOADS
+   CRUD (editar/eliminar), fecha sin hora, vinculo visible con cobros,
+   filtro por cliente en el libro de viajes.
+   ================================================================== */
+
+var _ldFiltro = '';
+
+function rowLoad(l) {
+  const i = ESTADOS_LOAD.indexOf(l.estado);
+  const next = i >= 0 && i < ESTADOS_LOAD.length - 1 ? ESTADOS_LOAD[i + 1] : null;
+  const cobro = l.cobro_id ? COBROS.find(c => c.id === l.cobro_id) : null;
+  const chipCobro = cobro ? `<div class="pg-chipset"><span class="pg-chip">🔗 En cobro · ${fmt$(cobro.monto || 0)}</span></div>` : '';
+  const accionEstado = l.cobro_id
+    ? `<span style="font-size:11px;color:var(--pg-muted)">estado lo maneja el cobro</span>`
+    : (next ? `<button class="pg-btn sm mint" onclick="avanzarLoad('${l.id}','${next}')">→ ${ESTADO_LBL[next]}</button>` : '');
+  return `<tr><td><b>${esc(l.load_id_externo || '—')}</b><div style="font-size:11px;color:var(--pg-muted)">${esc(cliName(l.cliente_id))}</div>${chipCobro}</td>
+  <td style="font-size:12px">${esc(l.origen || '—')} → ${esc(l.destino || '—')}</td>
+  <td style="font-size:12px">${fmtD(l.fecha_hora ? l.fecha_hora.slice(0, 10) : null)}</td>
+  <td class="num" style="text-align:right">${l.tarifa ? fmt$(l.tarifa) : '—'}</td><td>${pill(l.estado)}</td>
+  <td style="white-space:nowrap">${accionEstado}
+  <button class="pg-btn sm secondary" onclick="generarDosier('${l.id}')">📑</button>
+  <button class="pg-actbtn" title="Editar" onclick="editarLoad('${l.id}')">✏️</button>
+  <button class="pg-actbtn" title="Eliminar" onclick="eliminarLoad('${l.id}')">🗑️</button></td></tr>`;
+}
+
+function vLoads() {
+  const editando = EDIT.load ? LOADS.find(x => x.id === EDIT.load) : null;
+  const opsCliente = `<option value="">Todos los clientes</option>` + CLIENTES.map(c => `<option value="${c.id}" ${_ldFiltro === c.id ? 'selected' : ''}>${esGuia(c) ? '🧭 ' : ''}${esc(c.empresa)}</option>`).join('');
+  const listaLoads = (_ldFiltro ? LOADS.filter(l => l.cliente_id === _ldFiltro) : LOADS);
+  return `
+  <div class="pg-eyebrow">Autollenado · v4</div><h1>Cargar viaje</h1>
+  <div class="pg-sub">Pega el screenshot o correo del load de Amazon Relay y confirma los campos. Máquina de estados: Cargado → En ruta → Entregado → Facturado → Cobrado.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de viajes (loads)</h2>
+      <div class="field" style="max-width:280px"><label>Filtrar por cliente</label><select id="ldFiltroCliente" onchange="_ldFiltro=this.value;render()">${opsCliente}</select></div>
+      <table class="pg-table"><thead><tr><th>Load / Cliente</th><th>Ruta</th><th>Fecha</th><th style="text-align:right">Tarifa</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${listaLoads.map(rowLoad).join('') || '<tr><td colspan="6" style="color:var(--pg-muted)">Sin viajes aún.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Cargar viaje</h2><div class="h2sub">Solo Cliente y Load ID son obligatorios — el resto lo llenas si lo tienes a mano.</div>
+      ${editando ? editBar('load', editando.load_id_externo || editando.id.slice(0, 8)) : ''}
+      ${editando ? '' : `<div class="paste-zone" id="pasteZone" tabindex="0">📸 Clic aquí y pega (Ctrl/Cmd+V) el screenshot del load, de referencia
+        <small>Por ahora los campos se llenan a mano abajo mirando la imagen — la lectura automática es la siguiente fase.</small>
+        <div class="pz-preview"></div>
+      </div>`}
+      <div class="field"><label>Cliente *</label><select id="ldCliente">${CLIENTES.map(c => `<option value="${c.id}" ${editando && editando.cliente_id === c.id ? 'selected' : ''}>${esGuia(c) ? '🧭 ' : ''}${esc(c.empresa)}</option>`).join('')}</select></div>
+      <div class="frow2">
+        <div class="field"><label>Load ID *</label><input id="ldLoadId" placeholder="Ej: AMZL-US1-2345678" value="${editando ? esc(editando.load_id_externo || '') : ''}"></div>
+        <div class="field"><label>Tipo de carga <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldTipo" placeholder="Ej: Dry Van" value="${editando ? esc(editando.tipo_carga || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Origen</label><input id="ldOrigen" placeholder="Ciudad, estado" value="${editando ? esc(editando.origen || '') : ''}"></div>
+        <div class="field"><label>Destino</label><input id="ldDestino" placeholder="Ciudad, estado" value="${editando ? esc(editando.destino || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Fecha del viaje</label><input id="ldFecha" type="date" value="${editando ? esc((editando.fecha_hora || '').slice(0, 10)) : hoyISO()}"></div>
+        <div class="field"><label>Millas <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldMillas" type="number" value="${editando ? esc(editando.millas || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Tarifa (rate) $ <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldTarifa" type="number" step="0.01" value="${editando ? esc(editando.tarifa || '') : ''}"></div>
+        <div class="field"><label>Camión / Placa <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldCamion" value="${editando ? esc(editando.camion_placa || '') : ''}"></div>
+      </div>
+      <div class="field"><label>Conductor <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="ldConductor" value="${editando ? esc(editando.conductor || '') : ''}"></div>
+      <div class="field"><label>Notas / soporte <span style="font-weight:400;text-transform:none">(opcional)</span></label><textarea id="ldNotas" rows="2">${editando ? esc(editando.notas || '') : ''}</textarea></div>
+      <button class="pg-btn" onclick="crearLoad()">${editando ? 'Guardar cambios' : 'Confirmar y registrar'} <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+
+async function crearLoad() {
+  const cliente_id = $('ldCliente').value;
+  if (!cliente_id) return toast('Falta el cliente');
+  if (!$('ldLoadId').value.trim()) return toast('Falta el Load ID');
+  const row = {
+    cliente_id, load_id_externo: $('ldLoadId').value.trim() || null, origen: $('ldOrigen').value.trim() || null,
+    destino: $('ldDestino').value.trim() || null, fecha_hora: $('ldFecha').value ? $('ldFecha').value + 'T12:00:00' : null,
+    millas: $('ldMillas').value || null, tarifa: $('ldTarifa').value || null, camion_placa: $('ldCamion').value.trim() || null,
+    conductor: $('ldConductor').value.trim() || null, tipo_carga: $('ldTipo').value.trim() || null, notas: $('ldNotas').value.trim() || null,
+  };
+  if (EDIT.load) {
+    const { error } = await sb.from('amazon_loads').update(row).eq('id', EDIT.load);
+    if (error) return toast('Error: ' + error.message);
+    await eventoAudit('editado', `Load ${row.load_id_externo || EDIT.load.slice(0, 8)} editado`, { cliente_id, load_id: EDIT.load });
+    EDIT.load = null; toast('Viaje actualizado');
+  } else {
+    row.created_by = ME.email;
+    const { data, error } = await sb.from('amazon_loads').insert(row).select().single();
+    if (error) return toast('Error: ' + error.message);
+    await evento('nota', `Load ${row.load_id_externo || data.id.slice(0, 8)} cargado (${row.origen || '—'} → ${row.destino || '—'})`, { cliente_id, load_id: data.id });
+    toast('Viaje registrado');
+  }
+  _pastedImg = null; await loadAll(); render();
+}
+
+async function avanzarLoad(id, estado) {
+  const l = LOADS.find(x => x.id === id);
+  if (l && l.cobro_id) return toast('Este viaje sigue el estado de su cobro');
+  const { error } = await sb.from('amazon_loads').update({ estado }).eq('id', id);
+  if (error) return toast('Error: ' + error.message);
+  await evento('cambio_estado', `Load ${l?.load_id_externo || id.slice(0, 8)} pasó a ${ESTADO_LBL[estado]}`, { cliente_id: l?.cliente_id, load_id: id });
+  toast('Estado: ' + ESTADO_LBL[estado]); await loadAll(); render();
+}
+
+function editarLoad(id) { EDIT.load = id; render(); }
+
+function eliminarLoad(id) {
+  const l = LOADS.find(x => x.id === id);
+  if (!l) return;
+  const c = cli(l.cliente_id);
+  const cobro = l.cobro_id ? COBROS.find(co => co.id === l.cobro_id) : null;
+  pgConfirm({
+    titulo: '¿Eliminar viaje?',
+    cuerpo: `Vas a eliminar el load <b>${esc(l.load_id_externo || l.id.slice(0, 8))}</b>${cobro ? ` que está dentro del cobro <b>${esc(cobro.concepto || '')}</b> (${fmt$(cobro.monto || 0)}) del periodo <b>${fmtD(cobro.periodo_desde)} – ${fmtD(cobro.periodo_hasta)}</b>.` : '.'}`,
+    guia: esGuia(c) ? 'Es el ejemplo guía del sistema — sirve de referencia para el equipo.' : null,
+    aviso: cobro ? 'Este viaje está dentro de un cobro.' : null,
+    extra: cobro ? `<label><input type="checkbox" id="delDesvincular" checked> Desvincular del cobro y borrarlo de todos modos</label>` : null,
+    textoBoton: 'Sí, eliminar',
+    onOk: async () => {
+      if (cobro && !pgConfirmChecked('delDesvincular')) {
+        toast('Desvincula el viaje del cobro primero');
+        return;
+      }
+      if (cobro) {
+        const { error: e1 } = await sb.from('amazon_loads').update({ cobro_id: null }).eq('id', id);
+        if (e1) return toast('Error: ' + e1.message);
+      }
+      // TODO: si el FK de amazon_eventos.load_id bloquea el insert tras el delete, este evento ya se registra ANTES asi que no deberia fallar.
+      await eventoAudit('eliminado', `Load ${l.load_id_externo || id.slice(0, 8)} eliminado`, { cliente_id: l.cliente_id, load_id: id });
+      const { error } = await sb.from('amazon_loads').delete().eq('id', id);
+      if (error) return toast('Error: ' + error.message);
+      toast('Viaje eliminado'); await loadAll(); render();
+    }
+  });
+}
+
+/* ENTREGA: Libro de viajes con CRUD completo (crear/editar/eliminar), fecha sin hora
+   (input type=date, se guarda a mediodia), chip de vinculo con cobro y bloqueo de avance
+   de estado cuando el load esta vinculado a un cobro, filtro por cliente en el listado.
+   Funciones declaradas: vLoads, rowLoad, crearLoad, avanzarLoad, editarLoad, eliminarLoad.
+   TODO: lectura automatica del screenshot pegado (_pastedImg) sigue sin conectarse a los
+   campos del formulario, igual que en v3 — queda manual.
+   Supuesto: al eliminar un load vinculado a un cobro, si el checkbox no esta marcado se
+   aborta sin desvincular ni borrar. */
+
+
+/* ---------- 30-cobros.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · MODULO C — COBROS
+   CRUD de cobros + herencia CARGAS -> COBRO con calculo automatico.
+   Declara SOLO: vCobros, rowCobro, crearCobro, avanzarCobro, editarCobro,
+   eliminarCobro, cbTipoChange, cbSvcChange, cbRefrescarLoads, cbRecalcular,
+   cbToggleTodos, cbBuscarLoad, verLoadsDeCobro
+   ================================================================== */
+
+var _cbMontoManual = false;      // el operador piso el monto a mano
+var _cbConceptoManual = false;   // el operador piso el concepto a mano
+var _cbBusqueda = '';            // filtro visual de la lista de loads
+
+/* loads elegibles para un cobro: del cliente, en el periodo, sin cobro y entregado/facturado */
+var _cbLoadsElegibles = function (cid, desde, hasta) {
+  var d = desde || '0000-01-01', h = hasta || '9999-12-31';
+  return LOADS.filter(function (l) {
+    if (l.cliente_id !== cid) return false;
+    if (l.cobro_id) return false;
+    if (l.estado !== 'entregado' && l.estado !== 'facturado') return false;
+    var f = (l.fecha_hora || '').slice(0, 10);
+    if (!f) return false;
+    return f >= d && f <= h;
+  }).sort(function (a, b) { return (a.fecha_hora || '') < (b.fecha_hora || '') ? -1 : 1; });
+};
+
+/* ------------------------------------------------------------------ VISTA */
+function vCobros() {
+  var ed = EDIT.cobro ? COBROS.find(function (x) { return x.id === EDIT.cobro; }) : null;
+  if (EDIT.cobro && !ed) EDIT.cobro = null;
+  if (!EDIT.cobro) { _cbMontoManual = false; _cbConceptoManual = false; _cbBusqueda = ''; }
+
+  var cliSel = ed ? ed.cliente_id : (CLIENTES[0] ? CLIENTES[0].id : '');
+  var desde = ed ? (ed.periodo_desde || haceISO(9)) : haceISO(9);
+  var hasta = ed ? (ed.periodo_hasta || hoyISO()) : hoyISO();
+
+  /* pinta la lista de loads y precarga el formulario justo despues del innerHTML */
+  setTimeout(function () {
+    if (VIEW !== 'cobros') return;
+    if (!EDIT.cobro && $('cbLoads')) cbRefrescarLoads();
+    if (!EDIT.cobro && $('cbTipo')) cbTipoChange();
+  }, 0);
+
+  var filas = COBROS.map(function (c) {
+    var i = ESTADOS_COBRO.indexOf(c.estado);
+    var n = i >= 0 && i < ESTADOS_COBRO.length - 1 ? ESTADOS_COBRO[i + 1] : null;
+    var lds = loadsDeCobro(c.id);
+    var chip = (c.tipo === 'semanal' && lds.length)
+      ? `<span class="pg-chip disp" style="cursor:pointer" onclick="verLoadsDeCobro('${c.id}')">${lds.length} viaje${lds.length === 1 ? '' : 's'} · Gross ${fmt$(grossDeCobro(c.id))} ▾</span>`
+      : '';
+    var detalle = lds.length ? `<div id="lds_${c.id}" style="display:none;margin-top:6px;font-size:11.5px;color:var(--pg-muted);line-height:1.7">` +
+      lds.map(function (l) { return `· <span class="mono">${esc(l.load_id_externo || '—')}</span> · ${fmtD((l.fecha_hora || '').slice(0, 10))} · ${fmt$(l.tarifa || 0)}`; }).join('<br>') +
+      '</div>' : '';
+    return `<tr><td><span class="linkish" onclick="abrirCliente('${c.cliente_id}')">${esc(cliName(c.cliente_id))}</span>
+      <div style="font-size:11.5px;color:var(--pg-muted)">${esc(c.concepto)}${c.transaccion ? ` · <span class="mono">#${esc(c.transaccion)}</span>` : ''}${c.monto_manual ? ' · <b>manual</b>' : ''}</div>
+      ${chip ? `<div class="pg-chipset">${chip}</div>` : ''}${detalle}</td>
+      <td style="font-size:12px">${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td>
+      <td class="num" style="text-align:right">${fmt$(c.monto)}${c.gross_total ? `<div style="font-size:10px;color:var(--pg-muted)">Gross ${fmt$(c.gross_total)}</div>` : ''}</td>
+      <td>${pill(c.estado)}</td>
+      <td style="white-space:nowrap">${n ? `<button class="pg-btn sm mint" title="Pasar a ${ESTADO_LBL[n]}" onclick="avanzarCobro('${c.id}','${n}')">→</button>` : ''}
+      <button class="pg-btn sm secondary" title="Generar correo" onclick="correoCobro('${c.id}')">✉</button>
+      <button class="pg-btn sm secondary" title="Generar invoice" onclick="invoiceDesdeCobro('${c.id}')">🧾</button>
+      <button class="pg-actbtn" title="Editar" onclick="editarCobro('${c.id}')">✏️</button>
+      <button class="pg-actbtn" title="Eliminar" onclick="eliminarCobro('${c.id}')">🗑️</button></td></tr>`;
+  }).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros aún.</td></tr>';
+
+  return `
+  <div class="pg-eyebrow">Cobros externos</div><h1>Cobros</h1>
+  <div class="pg-sub">Registro del cobro semanal (dispatching) y de servicios à la carte. Flujo: Registrado → Autorizado → Enviado a FAM → Fondos validados → Pagado.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Libro de cobros</h2>
+      <table class="pg-table"><thead><tr><th>Cliente / Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${filas}
+      </tbody></table>
+      <div id="correoOut"></div>
+    </div>
+    <div class="pg-card">
+      <h2>${ed ? 'Editar cobro' : 'Registrar pago semanal a debitar'}</h2>
+      <div class="h2sub">${ed ? 'Cambia lo que necesites y guarda. Los viajes vinculados no se tocan.' : 'Elige cliente y periodo: los viajes sin cobrar aparecen solos y el monto se calcula con el esquema del cliente.'}</div>
+      ${ed ? editBar('cobro', ed.concepto || 'cobro') : ''}
+      <div class="field"><label>Cliente *</label><select id="cbCliente" onchange="cbRefrescarLoads()">${CLIENTES.map(function (c) { return `<option value="${c.id}"${c.id === cliSel ? ' selected' : ''}>${esGuia(c) ? '🧭 ' : ''}${esc(c.empresa)}${c.dot ? ' · DOT ' + esc(c.dot) : ''}</option>`; }).join('')}</select></div>
+      <div class="field"><label>Tipo</label><select id="cbTipo" onchange="cbTipoChange()">
+        <option value="semanal"${ed && ed.tipo === 'servicio' ? '' : ' selected'}>Pago semanal (dispatching) — el más común</option>
+        <option value="servicio"${ed && ed.tipo === 'servicio' ? ' selected' : ''}>Servicio de la tabla de tarifas</option></select></div>
+      <div class="field${ed && ed.tipo === 'servicio' ? '' : ' hidden'}" id="cbSvcWrap"><label>Servicio</label><select id="cbServicio" onchange="cbSvcChange()">${SERVICIOS.filter(function (s) { return s.activo; }).map(function (s) { return `<option value="${s.id}" data-p="${s.precio}"${ed && ed.servicio_id === s.id ? ' selected' : ''}>${esc(s.nombre)} — ${fmt$(s.precio)}${s.precio_max ? '–' + fmt$(s.precio_max) : ''}</option>`; }).join('')}</select><div style="font-size:11px;color:var(--pg-muted);margin-top:4px">El monto se llena solo con la tarifa del servicio.</div></div>
+      <div class="frow2">
+        <div class="field"><label>Desde</label><input id="cbDesde" type="date" value="${desde}" onchange="cbRefrescarLoads()"></div>
+        <div class="field"><label>Hasta</label><input id="cbHasta" type="date" value="${hasta}" onchange="cbRefrescarLoads()"></div>
+      </div>
+      <div id="cbHerencia" class="${ed ? 'hidden' : ''}">
+        <div class="field"><label>Viajes del periodo <span style="font-weight:400;text-transform:none">(marca los que entran en este cobro)</span></label>
+          <input id="cbBuscar" oninput="cbBuscarLoad()" placeholder="Buscar por Load ID…" style="margin-bottom:6px">
+          <div id="cbLoads" class="pg-loadpick"></div>
+          <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <button type="button" class="pg-preset" onclick="cbToggleTodos()">Marcar / desmarcar todos</button>
+            <span style="font-size:11.5px;color:var(--pg-muted)">Gross total: <b id="cbGross" class="num">$0.00</b></span>
+          </div>
+        </div>
+      </div>
+      <div class="field"><label>Monto ($) a debitar *</label><input id="cbMonto" type="number" step="0.01" placeholder="Ej: 169.12" value="${ed ? (ed.monto != null ? ed.monto : '') : ''}" oninput="_cbMontoManual=true"></div>
+      <div id="cbDesglose" class="pg-desglose">Elige cliente y periodo para calcular el monto.</div>
+      <div class="field" style="margin-top:12px"><label>Concepto <span style="font-weight:400;text-transform:none">(se llena solo, edítalo si quieres)</span></label><input id="cbConcepto" placeholder="Servicios de dispatching" value="${ed ? esc(ed.concepto || '') : ''}" oninput="_cbConceptoManual=true"></div>
+      <div class="field"><label>Notas <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="cbNotas" value="${ed ? esc(ed.notas || '') : ''}"></div>
+      <button class="pg-btn" onclick="crearCobro()">${ed ? 'Guardar cambios' : 'Registrar cobro'} <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+
+/* fila compacta usada en el detalle de cliente */
+function rowCobro(c) {
+  var i = ESTADOS_COBRO.indexOf(c.estado);
+  var next = i >= 0 && i < ESTADOS_COBRO.length - 1 ? ESTADOS_COBRO[i + 1] : null;
+  return `<tr><td>${esc(c.concepto)}${c.transaccion ? `<div style="font-size:10.5px;color:var(--pg-muted)" class="mono">Trans #${esc(c.transaccion)}</div>` : ''}</td>
+  <td style="font-size:12px">${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td>
+  <td class="num" style="text-align:right">${fmt$(c.monto)}</td><td>${pill(c.estado)}</td>
+  <td style="white-space:nowrap">${next ? `<button class="pg-btn sm mint" onclick="avanzarCobro('${c.id}','${next}')">→ ${ESTADO_LBL[next]}</button>` : ''}
+  <button class="pg-btn sm secondary" onclick="correoCobro('${c.id}')">✉</button>
+  <button class="pg-btn sm secondary" onclick="invoiceDesdeCobro('${c.id}')">🧾</button>
+  <button class="pg-actbtn" title="Editar" onclick="editarCobro('${c.id}')">✏️</button>
+  <button class="pg-actbtn" title="Eliminar" onclick="eliminarCobro('${c.id}')">🗑️</button></td></tr>`;
+}
+
+/* ------------------------------------------------- FORMULARIO / HERENCIA */
+function cbTipoChange() {
+  if (!$('cbTipo')) return;
+  var esSvc = $('cbTipo').value === 'servicio';
+  if ($('cbSvcWrap')) $('cbSvcWrap').classList.toggle('hidden', !esSvc);
+  if ($('cbHerencia')) $('cbHerencia').classList.toggle('hidden', esSvc || !!EDIT.cobro);
+  if (esSvc) { cbSvcChange(); }
+  else { if (!EDIT.cobro) cbRefrescarLoads(); else if (!$('cbConcepto').value) $('cbConcepto').value = 'Servicios de dispatching'; }
+}
+
+function cbSvcChange() {
+  if (!$('cbTipo') || $('cbTipo').value !== 'servicio') return;
+  var o = $('cbServicio') && $('cbServicio').selectedOptions[0];
+  if (!o) return;
+  $('cbMonto').value = o.dataset.p;
+  $('cbConcepto').value = o.textContent.split('—')[0].trim();
+  _cbMontoManual = false;
+  if ($('cbDesglose')) $('cbDesglose').innerHTML = 'Servicio de la tabla de tarifas — el monto viene del catálogo.';
+}
+
+function cbRefrescarLoads() {
+  var box = $('cbLoads');
+  if (!box || EDIT.cobro) return;   // en edición no se tocan los viajes vinculados
+  if ($('cbTipo') && $('cbTipo').value === 'servicio') return;
+  var cid = $('cbCliente') ? $('cbCliente').value : null;
+  var lds = _cbLoadsElegibles(cid, $('cbDesde') ? $('cbDesde').value : '', $('cbHasta') ? $('cbHasta').value : '');
+  if (!lds.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--pg-muted);padding:8px 4px;line-height:1.5">Sin viajes sin cobrar en este periodo — puedes registrar el cobro igual escribiendo el monto a mano.</div>';
+  } else {
+    box.innerHTML = lds.map(function (l) {
+      return `<label data-lid="${esc((l.load_id_externo || '').toLowerCase())}"><input type="checkbox" class="cbLd" value="${l.id}" data-t="${Number(l.tarifa) || 0}" checked onchange="cbRecalcular()"><span><span class="mono">${esc(l.load_id_externo || '—')}</span> · ${fmtD((l.fecha_hora || '').slice(0, 10))} · Gross ${fmt$(l.tarifa || 0)}</span></label>`;
+    }).join('');
+  }
+  cbBuscarLoad();
+  cbRecalcular();
+}
+
+function cbRecalcular() {
+  if (!$('cbDesglose') || EDIT.cobro) return;
+  var g = 0, n = 0;
+  var chks = document.querySelectorAll('#cbLoads input.cbLd');
+  for (var i = 0; i < chks.length; i++) { if (chks[i].checked) { g += Number(chks[i].dataset.t) || 0; n++; } }
+  g = Math.round(g * 100) / 100;
+  if ($('cbGross')) $('cbGross').textContent = fmt$(g);
+  var c = cli($('cbCliente') ? $('cbCliente').value : null);
+  var r = calcMontoEsquema(c, g);
+  if (!_cbMontoManual && $('cbMonto')) $('cbMonto').value = r.monto ? r.monto.toFixed(2) : '';
+  $('cbDesglose').innerHTML = `<b>${n}</b> viaje${n === 1 ? '' : 's'} marcado${n === 1 ? '' : 's'} · Gross ${fmt$(g)}<br>${esquemaLabel(c)}: ${r.desglose}` +
+    (_cbMontoManual ? ' · <b>monto puesto a mano</b>' : '') +
+    ` · <span class="linkish" onclick="_cbMontoManual=false;cbRecalcular()">recalcular automático</span>`;
+  /* concepto automatico */
+  if (!_cbConceptoManual && !EDIT.cobro && $('cbConcepto') && $('cbTipo') && $('cbTipo').value === 'semanal') {
+    $('cbConcepto').value = `Dispatching ${fmtD($('cbDesde').value)} → ${fmtD($('cbHasta').value)} · ${n} viaje${n === 1 ? '' : 's'}`;
+  }
+}
+
+function cbToggleTodos() {
+  var chks = document.querySelectorAll('#cbLoads input.cbLd');
+  var vis = [];
+  for (var i = 0; i < chks.length; i++) {
+    var lab = chks[i].parentElement;
+    if (lab && lab.style.display !== 'none') vis.push(chks[i]);
+  }
+  if (!vis.length) return;
+  var todos = vis.every(function (x) { return x.checked; });
+  vis.forEach(function (x) { x.checked = !todos; });
+  cbRecalcular();
+}
+
+/* filtro SOLO visual — nunca desmarca checkboxes */
+function cbBuscarLoad() {
+  _cbBusqueda = ($('cbBuscar') ? $('cbBuscar').value : '').trim().toLowerCase();
+  var labs = document.querySelectorAll('#cbLoads label');
+  for (var i = 0; i < labs.length; i++) {
+    var id = labs[i].dataset.lid || '';
+    labs[i].style.display = (!_cbBusqueda || id.indexOf(_cbBusqueda) >= 0) ? '' : 'none';
+  }
+}
+
+/* despliega/oculta los loads de un cobro en el libro — sin re-render */
+function verLoadsDeCobro(id) {
+  var d = document.getElementById('lds_' + id);
+  if (!d) return;
+  d.style.display = (d.style.display === 'none' || !d.style.display) ? 'block' : 'none';
+}
+
+/* ------------------------------------------------------ CREAR / EDITAR */
+async function crearCobro() {
+  var cliente_id = $('cbCliente').value;
+  var monto = parseFloat($('cbMonto').value);
+  if (!cliente_id || !monto) return toast('Falta cliente o monto');
+  var tipo = $('cbTipo').value;
+  var concepto = $('cbConcepto').value.trim() || (tipo === 'semanal' ? 'Servicios de dispatching' : 'Servicio');
+  var base = {
+    cliente_id: cliente_id, tipo: tipo, concepto: concepto,
+    servicio_id: tipo === 'servicio' ? $('cbServicio').value : null,
+    periodo_desde: $('cbDesde').value || null, periodo_hasta: $('cbHasta').value || null,
+    monto: monto, notas: $('cbNotas').value.trim() || null
+  };
+
+  /* ---- modo edicion ---- */
+  if (EDIT.cobro) {
+    var idEd = EDIT.cobro;
+    var cEd = COBROS.find(function (x) { return x.id === idEd; });
+    base.monto_manual = (cEd && Number(cEd.monto) !== monto) ? true : (cEd ? cEd.monto_manual : null);
+    var re = await sb.from('amazon_cobros').update(base).eq('id', idEd);
+    if (re.error) return toast('Error: ' + re.error.message);
+    await eventoAudit('editado', `Cobro editado · ${concepto} · ${fmt$(monto)}`, { cliente_id: cliente_id, cobro_id: idEd });
+    EDIT.cobro = null; _cbMontoManual = false; _cbConceptoManual = false;
+    toast('Cobro actualizado');
+    await loadAll(); render();
+    return;
+    // TODO: reasignar loads en edición
+  }
+
+  /* ---- alta ---- */
+  var ids = [], gross = 0;
+  if (tipo === 'semanal') {
+    var chks = document.querySelectorAll('#cbLoads input.cbLd');
+    for (var i = 0; i < chks.length; i++) if (chks[i].checked) { ids.push(chks[i].value); gross += Number(chks[i].dataset.t) || 0; }
+    gross = Math.round(gross * 100) / 100;
+  }
+  base.gross_total = gross || null;
+  base.monto_manual = _cbMontoManual || null;
+  base.created_by = ME.email;
+
+  var r = await sb.from('amazon_cobros').insert(base).select().single();
+  if (r.error) return toast('Error: ' + r.error.message);
+  var cobroId = r.data.id;
+
+  if (ids.length) {
+    var ru = await sb.from('amazon_loads').update({ cobro_id: cobroId, estado: 'facturado' }).in('id', ids);
+    if (ru.error) toast('Cobro creado pero los viajes no se vincularon: ' + ru.error.message);
+  }
+  await eventoAudit('cobro_registrado',
+    `Cobro ${fmt$(monto)} · ${ids.length} viaje${ids.length === 1 ? '' : 's'} · Gross ${fmt$(gross)}${_cbMontoManual ? ' · monto manual' : ''}`,
+    { cliente_id: cliente_id, cobro_id: cobroId });
+
+  _cbMontoManual = false; _cbConceptoManual = false;
+  toast(ids.length ? `Cobro registrado · ${ids.length} viaje${ids.length === 1 ? '' : 's'} facturado${ids.length === 1 ? '' : 's'}` : 'Cobro registrado');
+  await loadAll(); render();
+}
+
+function editarCobro(id) {
+  var c = COBROS.find(function (x) { return x.id === id; });
+  if (!c) return toast('No encuentro ese cobro');
+  EDIT.cobro = id;
+  _cbMontoManual = true; _cbConceptoManual = true;   // respeta lo guardado, no recalcula encima
+  VIEW = 'cobros'; DETALLE = null;
+  render();
+  var m = $('main'); if (m) m.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ------------------------------------------------------ MAQUINA DE ESTADOS */
+async function avanzarCobro(id, estado) {
+  var transaccion = null;
+  if (estado === 'fondos_validados') { transaccion = prompt('Número de transacción (FAM):') || null; }
+  var upd = { estado: estado };
+  if (transaccion) upd.transaccion = transaccion;
+  var r = await sb.from('amazon_cobros').update(upd).eq('id', id);
+  if (r.error) return toast('Error: ' + r.error.message);
+  var c = COBROS.find(function (x) { return x.id === id; });
+
+  /* arrastra los viajes del cobro a "cobrado" */
+  var nLd = 0;
+  if (estado === 'fondos_validados' || estado === 'pagado') {
+    nLd = loadsDeCobro(id).length;
+    if (nLd) {
+      var rl = await sb.from('amazon_loads').update({ estado: 'cobrado' }).eq('cobro_id', id);
+      if (rl.error) toast('Viajes no actualizados: ' + rl.error.message);
+    }
+  }
+
+  await evento('cambio_estado',
+    `Cobro pasó a ${ESTADO_LBL[estado]}${transaccion ? ' · Trans #' + transaccion : ''}${nLd ? ' · ' + nLd + ' viaje(s) a Cobrado' : ''}`,
+    { cliente_id: c ? c.cliente_id : null, cobro_id: id });
+  if (estado === 'fondos_validados' && c) await generarReparto(c);
+  toast('Estado: ' + ESTADO_LBL[estado] + (nLd ? ` · ${nLd} viaje${nLd === 1 ? '' : 's'} cobrado${nLd === 1 ? '' : 's'}` : ''));
+  await loadAll();
+  if (DETALLE) abrirCliente(DETALLE); else render();
+}
+
+/* ------------------------------------------------------------- ELIMINAR */
+function eliminarCobro(id) {
+  var c = COBROS.find(function (x) { return x.id === id; });
+  if (!c) return toast('No encuentro ese cobro');
+  var clc = cli(c.cliente_id);
+  var lds = loadsDeCobro(id);
+  var rep = REPARTOS.find(function (r) { return r.cobro_id === id; });
+  var inv = INVOICES.find(function (v) { return v.cobro_id === id; });
+
+  var cuerpo = `Vas a eliminar el cobro <b>${esc(c.concepto)}</b> de <b>${esc(cliName(c.cliente_id))}</b> por <b>${fmt$(c.monto)}</b>.<br><br>Esto va a pasar:<br>` +
+    `· Se elimina el cobro y su historial queda en eventos.<br>` +
+    `· ${lds.length ? `<b>${lds.length}</b> viaje${lds.length === 1 ? '' : 's'} se desvincula${lds.length === 1 ? '' : 'n'} y vuelve${lds.length === 1 ? '' : 'n'} a estado <b>Entregado</b>.` : 'No hay viajes vinculados.'}<br>` +
+    `· ${rep ? 'Se borra el <b>reparto</b> (operario / opex / utilidad) de este cobro.' : 'No tiene reparto generado.'}<br>` +
+    (inv ? `· Existe el invoice <b>${esc(inv.numero)}</b> por ${fmt$(inv.total)} — decide abajo qué hacer con él.` : '· No tiene invoice asociado.');
+
+  pgConfirm({
+    titulo: '¿Eliminar este cobro?',
+    cuerpo: cuerpo,
+    aviso: 'Esta acción no se puede deshacer.',
+    guia: esGuia(clc) ? 'Es el ejemplo guía del sistema — sirve de referencia para el equipo.' : null,
+    extra: inv ? `<label><input type="checkbox" id="delInvoice"> Eliminar también el invoice ${esc(inv.numero)}</label>` : null,
+    textoBoton: 'Sí, eliminar',
+    onOk: async function () {
+      if (inv && !pgConfirmChecked('delInvoice')) { toast('Decide qué hacer con el invoice ' + inv.numero + ' primero'); return; }
+
+      var resumen = `Cobro eliminado · ${c.concepto} · ${fmt$(c.monto)} · ${lds.length} viaje(s) desvinculado(s)${rep ? ' · reparto borrado' : ''}${inv ? ' · invoice ' + inv.numero + ' eliminado' : ''}`;
+      await eventoAudit('eliminado', resumen, { cliente_id: c.cliente_id, cobro_id: id });
+
+      if (rep) await sb.from('amazon_repartos').delete().eq('cobro_id', id);
+      if (inv) {
+        var ri = await sb.from('amazon_invoices').delete().eq('id', inv.id);
+        if (ri.error) return toast('No se pudo borrar el invoice: ' + ri.error.message);
+      }
+      if (lds.length) await sb.from('amazon_loads').update({ cobro_id: null, estado: 'entregado' }).eq('cobro_id', id);
+
+      var rd = await sb.from('amazon_cobros').delete().eq('id', id);
+      if (rd.error) return toast('Error: ' + rd.error.message);
+      // TODO: si el FK de amazon_eventos impide borrar el cobro, registrar el evento solo con cliente_id
+      if (EDIT.cobro === id) EDIT.cobro = null;
+      toast('Cobro eliminado');
+      await loadAll(); render();
+    }
+  });
+}
+
+/* ENTREGA (Módulo C — Cobros)
+   FUNCIONA: vCobros con libro (chip expandible "N viajes · Gross $X" por cobro semanal),
+   formulario con herencia cargas→cobro (lista automática de loads sin cobrar del cliente en el
+   periodo, búsqueda visual por Load ID que no desmarca, marcar/desmarcar todos, gross en vivo,
+   monto propuesto con calcMontoEsquema + desglose y flag de monto manual con link "recalcular
+   automático", concepto autollenado editable), crearCobro (insert + update de loads a 'facturado'
+   + eventoAudit), avanzarCobro (arrastra loads a 'cobrado' en fondos_validados/pagado, conserva
+   prompt de transacción y generarReparto), editarCobro/crearCobro en modo edición con editBar,
+   eliminarCobro con pgConfirm + cascadas (reparto, desvincular loads, checkbox obligatorio para
+   invoice), rowCobro con ✏️/🗑️.
+   DECLARA: vCobros, rowCobro, crearCobro, avanzarCobro, editarCobro, eliminarCobro, cbTipoChange,
+   cbSvcChange, cbRefrescarLoads, cbRecalcular, cbToggleTodos, cbBuscarLoad, verLoadsDeCobro.
+   Vars propias: _cbMontoManual, _cbConceptoManual, _cbBusqueda, _cbLoadsElegibles.
+   TODO: reasignar loads en edición de un cobro existente.
+   TODO: si el FK de amazon_eventos bloquea el delete del cobro, registrar el evento solo con cliente_id.
+*/
+
+
+/* ---------- 40-servpro.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · MODULO D — SERVICIOS PROFESIONALES + Tarifario
+   Casos que NO son dispatching (recuperacion de cuenta, fondos,
+   Safer/FMCSA). Se cobran desde el caso cuando queda Completado.
+   ================================================================== */
+
+var _spFiltro = 'Todos';
+
+/* ---------- helpers de fecha proxima accion ---------- */
+function _spDiasProxima(fecha) {
+  if (!fecha) return null;
+  const hoy = new Date(hoyISO() + 'T00:00:00');
+  const fp = new Date(fecha + 'T00:00:00');
+  return Math.round((fp - hoy) / 86400000);
+}
+function _spProximaHTML(fecha) {
+  if (!fecha) return '—';
+  const d = _spDiasProxima(fecha);
+  if (d < 0) return `<span style="color:#C0392B">${fmtD(fecha)} · ⚠ vencida hace ${Math.abs(d)} día${Math.abs(d) === 1 ? '' : 's'}</span>`;
+  if (d <= 7) return `<span style="color:#B7791F">${fmtD(fecha)}</span>`;
+  return fmtD(fecha);
+}
+
+/* ---------- LISTA + FORMULARIO ---------- */
+function vServpro() {
+  const editando = EDIT.servpro ? SERVPRO.find(x => x.id === EDIT.servpro) : null;
+  const filtros = ['Todos', ...SP_ESTADOS];
+  const lista = (_spFiltro === 'Todos' ? SERVPRO : SERVPRO.filter(s => s.estado === _spFiltro))
+    .slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const clientesActivos = CLIENTES.filter(c => c.estado === 'activo' || (editando && editando.cliente_id === c.id));
+  const catalogoPro = SERVICIOS.filter(s => (s.tipo || '').toLowerCase() === 'profesional');
+  const clienteSel = editando ? editando.cliente_id : (clientesActivos[0] ? clientesActivos[0].id : '');
+  const cFicha = cli(clienteSel);
+  const fichaHTML = cFicha ? `Rep: ${esc(cFicha.representante || '—')} · Tel: ${esc(cFicha.telefono || '—')} · Email: ${esc(cFicha.email || '—')}` : 'Elige un cliente para ver su ficha';
+  const tipoEsOtro = editando && !catalogoPro.some(s => s.nombre === editando.tipo_servicio);
+
+  return `
+  <div class="pg-eyebrow">Casos que no son dispatching</div><h1>Servicios Profesionales</h1>
+  <div class="pg-sub">Recuperación de cuenta, fondos, Safer/FMCSA. Se cobra desde el caso cuando queda Completado.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Casos de servicios profesionales</h2>
+      <div class="pg-chipset" style="margin-bottom:10px">
+        ${filtros.map(f => `<span class="pg-preset" style="${_spFiltro === f ? 'border-color:var(--pg-mint);color:#12604f;background:#F2FBF8' : ''}" onclick="_spFiltro='${f}';render()">${esc(f)}</span>`).join('')}
+      </div>
+      <table class="pg-table"><thead><tr><th>Cliente</th><th>Tipo</th><th>Solicitud</th><th>Estado</th><th>Próxima acción</th><th style="text-align:right">Precio</th><th>Cobro</th><th></th></tr></thead><tbody>
+      ${lista.map(s => `<tr>
+        <td><span class="linkish" onclick="abrirServpro('${s.id}')">${esc(cliName(s.cliente_id))}</span></td>
+        <td style="font-size:12.5px">${esc(s.tipo_servicio || '—')}</td>
+        <td style="font-size:12px">${fmtD(s.fecha_solicitud)}</td>
+        <td>${spPill(s.estado)}</td>
+        <td style="font-size:12px">${_spProximaHTML(s.fecha_proxima_accion)}</td>
+        <td class="num" style="text-align:right">${fmt$(s.precio || 0)}</td>
+        <td>${spcPill(s.estado_cobro || 'Pendiente de facturar')}</td>
+        <td style="white-space:nowrap"><button class="pg-actbtn" title="Editar" onclick="editarServpro('${s.id}')">✏️</button>
+        <button class="pg-actbtn" title="Eliminar" onclick="eliminarServpro('${s.id}')">🗑️</button></td>
+      </tr>`).join('') || '<tr><td colspan="8" style="color:var(--pg-muted)">Sin casos aún.</td></tr>'}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      <h2>Registrar servicio profesional</h2><div class="h2sub">Sin nada logístico — hora, placa o load no aplican aquí.</div>
+      ${editando ? editBar('servpro', editando.tipo_servicio || 'caso') : ''}
+      <div class="field"><label>Cliente *</label><select id="spCliente" onchange="document.getElementById('spFicha').innerHTML=(function(c){return c?('Rep: '+esc(c.representante||'—')+' · Tel: '+esc(c.telefono||'—')+' · Email: '+esc(c.email||'—')):'Elige un cliente para ver su ficha';})(CLIENTES.find(x=>x.id===this.value))">
+        ${clientesActivos.map(c => `<option value="${c.id}" ${clienteSel === c.id ? 'selected' : ''}>${esGuia(c) ? '🧭 ' : ''}${esc(c.empresa)}</option>`).join('')}
+      </select></div>
+      <div class="field" id="spFicha" style="font-size:11.5px;color:var(--pg-muted);margin-top:-8px;margin-bottom:10px">${fichaHTML}</div>
+      <div class="frow2">
+        <div class="field"><label>Tipo de servicio *</label><select id="spTipo" onchange="spTipoChange()">
+          ${catalogoPro.map(s => `<option value="${s.id}" data-precio="${s.precio || 0}" data-nombre="${esc(s.nombre)}" ${editando && editando.tipo_servicio === s.nombre ? 'selected' : ''}>${esc(s.nombre)}</option>`).join('')}
+          <option value="otro" ${tipoEsOtro ? 'selected' : ''}>Otro…</option>
+        </select></div>
+        <div class="field" id="spTipoOtroWrap" style="${tipoEsOtro ? '' : 'display:none'}"><label>Nombre del servicio</label><input id="spTipoOtro" value="${tipoEsOtro ? esc(editando.tipo_servicio || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Fecha de solicitud</label><input id="spFecha" type="date" value="${editando ? esc(editando.fecha_solicitud || hoyISO()) : hoyISO()}"></div>
+        <div class="field"><label>Estado del servicio</label><select id="spEstado">${SP_ESTADOS.map(e => `<option ${editando && editando.estado === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>ID de caso / referencia</label><input id="spCaso" value="${editando ? esc(editando.id_caso || '') : ''}"></div>
+        <div class="field"><label>Enlace Safer/DOT</label><input id="spSafer" type="url" placeholder="https://…" value="${editando ? esc(editando.link_safer || '') : ''}"></div>
+      </div>
+      <div class="frow2">
+        <div class="field"><label>Próxima acción / vencimiento</label><input id="spProxima" type="date" value="${editando ? esc(editando.fecha_proxima_accion || '') : ''}"></div>
+        <div class="field"><label>Precio del servicio (USD)</label><input id="spPrecio" type="number" step="0.01" value="${editando ? esc(editando.precio || '') : ''}"></div>
+      </div>
+      <div class="field"><label>Estado de cobro</label><select id="spEstadoCobro">${SP_COBRO_ESTADOS.map(e => `<option ${editando && (editando.estado_cobro || 'Pendiente de facturar') === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select></div>
+      <button class="pg-btn" onclick="crearServpro()">${editando ? 'Guardar cambios' : 'Registrar servicio'} <span class="a">→</span></button>
+    </div>
+  </div>`;
+}
+
+function spTipoChange() {
+  const sel = $('spTipo');
+  const otroWrap = $('spTipoOtroWrap');
+  if (!sel) return;
+  if (sel.value === 'otro') { otroWrap.style.display = ''; return; }
+  otroWrap.style.display = 'none';
+  const opt = sel.options[sel.selectedIndex];
+  const precio = opt ? opt.getAttribute('data-precio') : null;
+  if (precio && $('spPrecio')) $('spPrecio').value = precio;
+}
+
+async function crearServpro() {
+  const cliente_id = $('spCliente').value;
+  if (!cliente_id) return toast('Falta el cliente');
+  const selTipo = $('spTipo');
+  let tipo_servicio = '';
+  if (selTipo.value === 'otro') tipo_servicio = ($('spTipoOtro').value || '').trim();
+  else { const opt = selTipo.options[selTipo.selectedIndex]; tipo_servicio = opt ? opt.getAttribute('data-nombre') : ''; }
+  if (!tipo_servicio) return toast('Falta el tipo de servicio');
+  const row = {
+    cliente_id, tipo_servicio,
+    fecha_solicitud: $('spFecha').value || hoyISO(),
+    estado: $('spEstado').value,
+    id_caso: $('spCaso').value.trim() || null,
+    link_safer: $('spSafer').value.trim() || null,
+    fecha_proxima_accion: $('spProxima').value || null,
+    precio: $('spPrecio').value || 0,
+    estado_cobro: $('spEstadoCobro').value,
+  };
+  if (EDIT.servpro) {
+    const { error } = await sb.from('amazon_servicios_pro').update(row).eq('id', EDIT.servpro);
+    if (error) return toast('Error: ' + error.message);
+    await eventoAudit('editado', `Servicio profesional editado: ${tipo_servicio}`, { cliente_id, servpro_id: EDIT.servpro });
+    EDIT.servpro = null; toast('Servicio actualizado');
+  } else {
+    row.created_by = ME.email;
+    const { error } = await sb.from('amazon_servicios_pro').insert(row);
+    if (error) return toast('Error: ' + error.message);
+    await eventoAudit('creado', `Servicio profesional registrado: ${tipo_servicio}`, { cliente_id });
+    toast('Servicio registrado');
+  }
+  await loadAll(); render();
+}
+
+function editarServpro(id) { EDIT.servpro = id; render(); }
+
+function eliminarServpro(id) {
+  const s = SERVPRO.find(x => x.id === id);
+  if (!s) return;
+  const c = cli(s.cliente_id);
+  const notas = SERVPRO_NOTAS.filter(n => n.servicio_id === id);
+  pgConfirm({
+    titulo: '¿Eliminar caso?',
+    cuerpo: `Vas a eliminar el caso <b>${esc(s.tipo_servicio || '')}</b> de <b>${esc(cliName(s.cliente_id))}</b>.${notas.length ? ` Tiene <b>${notas.length}</b> nota${notas.length === 1 ? '' : 's'} en la bitácora — se borran también.` : ''}${s.cobro_id ? ' El cobro ya generado <b>NO se borra</b>, solo se desvincula.' : ''}`,
+    guia: esGuia(c) ? 'Es el ejemplo guía del sistema — sirve de referencia para el equipo.' : null,
+    textoBoton: 'Sí, eliminar',
+    onOk: async () => {
+      await eventoAudit('eliminado', `Servicio profesional eliminado: ${s.tipo_servicio || id.slice(0, 8)}`, { cliente_id: s.cliente_id });
+      const { error } = await sb.from('amazon_servicios_pro').delete().eq('id', id);
+      if (error) return toast('Error: ' + error.message);
+      toast('Caso eliminado'); await loadAll(); render();
+    }
+  });
+}
+
+/* ---------- DETALLE ---------- */
+async function abrirServpro(id) {
+  VIEW = 'servpro'; SERVPRO_DETALLE = id;
+  document.querySelectorAll('.pg-side a').forEach(a => a.classList.toggle('on', a.dataset.v === 'servpro'));
+  const s = SERVPRO.find(x => x.id === id);
+  if (s && s.cobro_id && s.estado_cobro !== 'Pagado') {
+    const cobro = COBROS.find(c => c.id === s.cobro_id);
+    if (cobro && ['fondos_validados', 'pagado'].includes(cobro.estado)) {
+      // TODO: si esto falla por RLS/permisos, se sigue mostrando el estado derivado igual al renderizar.
+      try {
+        await sb.from('amazon_servicios_pro').update({ estado_cobro: 'Pagado' }).eq('id', id);
+        await loadAll();
+      } catch (e) { console.warn('sync estado_cobro', e); }
+    }
+  }
+  render();
+}
+
+function vServproDetalle(id) {
+  const s = SERVPRO.find(x => x.id === id);
+  if (!s) return vServpro();
+  const c = cli(s.cliente_id);
+  const notas = SERVPRO_NOTAS.filter(n => n.servicio_id === id).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const cobro = s.cobro_id ? COBROS.find(x => x.id === s.cobro_id) : null;
+  const estadoCobroDerivado = cobro && ['fondos_validados', 'pagado'].includes(cobro.estado) ? 'Pagado' : (s.estado_cobro || 'Pendiente de facturar');
+
+  return `
+  <div class="pg-eyebrow"><span class="linkish" onclick="nav('servpro')">← Servicios Profesionales</span></div>
+  <h1><span class="linkish" onclick="abrirCliente('${s.cliente_id}')">${esc(cliName(s.cliente_id))}</span></h1>
+  <div class="pg-sub">${esc(s.tipo_servicio || '—')} · ${spPill(s.estado)} ${spcPill(estadoCobroDerivado)}</div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Precio</div><div class="val">${fmt$(s.precio || 0)}</div><div class="sub">${esc(estadoCobroDerivado)}</div></div>
+    <div class="pg-kpi"><div class="lbl">Estado del caso</div><div class="val" style="font-size:15px">${esc(s.estado)}</div><div class="sub">${fmtD(s.fecha_solicitud)}</div></div>
+    <div class="pg-kpi"><div class="lbl">ID de caso</div><div class="val" style="font-size:15px">${esc(s.id_caso || '—')}</div><div class="sub">${s.link_safer ? `<a href="${esc(s.link_safer)}" target="_blank" rel="noopener" class="linkish">abrir Safer ↗</a>` : 'sin enlace'}</div></div>
+    <div class="pg-kpi"><div class="lbl">Próxima acción</div><div class="val" style="font-size:15px">${_spProximaHTML(s.fecha_proxima_accion)}</div><div class="sub">${esGuia(c) ? '🧭 ejemplo guía' : ''}</div></div>
+  </div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Estado del caso</h2><div class="h2sub">Cambiar el estado deja nota automática en la bitácora.</div>
+      <div class="field"><label>Estado</label><select onchange="(async()=>{const de='${s.estado}';const a='${s.id}';const to=this.value;const{error}=await sb.from('amazon_servicios_pro').update({estado:to}).eq('id',a);if(error){toast('Error: '+error.message);return;}await sb.from('amazon_servicios_pro_notas').insert({servicio_id:a,nota:'Estado: '+de+' → '+to,quien:ME.email});await eventoAudit('editado','Estado de servicio profesional cambiado a '+to,{cliente_id:'${s.cliente_id}'});toast('Estado actualizado');await loadAll();render();})()">
+        ${SP_ESTADOS.map(e => `<option ${s.estado === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}
+      </select></div>
+      ${s.estado === 'Completado' && !s.cobro_id ? `<button class="pg-btn mint" onclick="generarCobroServpro('${s.id}')">Generar cobro →</button>` :
+      (cobro ? `<div class="pg-desglose">Cobro vinculado: <b>${fmt$(cobro.monto || 0)}</b> · ${pill(cobro.estado)} <span class="linkish" onclick="nav('cobros')">ver en Cobros →</span></div>` : '<div style="font-size:12px;color:var(--pg-muted)">El cobro se genera cuando el caso queda Completado.</div>')}
+    </div>
+    <div class="pg-card">
+      <h2>Bitácora</h2>
+      <div class="pg-tl">
+        ${notas.map(n => `<div class="it">${esc(n.nota)} <span class="pg-actbtn" title="Eliminar nota" onclick="eliminarNotaServpro('${n.id}','${s.id}')">🗑️</span><div class="w">${fmtD((n.created_at || '').slice(0, 10))} · ${esc(n.quien || '—')}</div></div>`).join('') || '<div style="font-size:12px;color:var(--pg-muted)">Sin notas aún.</div>'}
+      </div>
+      <div class="frow" style="margin-top:12px">
+        <div class="field" style="flex:1"><input id="spNota" placeholder="Agregar nota…"></div>
+        <div class="field" style="display:flex;align-items:flex-end"><button class="pg-btn sm mint" onclick="agregarNotaServpro('${s.id}')">Agregar</button></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function agregarNotaServpro(id) {
+  const txt = ($('spNota').value || '').trim();
+  if (!txt) return toast('Escribe algo en la nota');
+  const { error } = await sb.from('amazon_servicios_pro_notas').insert({ servicio_id: id, nota: txt, quien: ME.email });
+  if (error) return toast('Error: ' + error.message);
+  toast('Nota agregada'); await loadAll(); render();
+}
+
+function eliminarNotaServpro(notaId, servicioId) {
+  pgConfirm({
+    titulo: '¿Eliminar nota?',
+    cuerpo: 'Esta nota se borra de la bitácora del caso.',
+    textoBoton: 'Sí, eliminar',
+    onOk: async () => {
+      const { error } = await sb.from('amazon_servicios_pro_notas').delete().eq('id', notaId);
+      if (error) return toast('Error: ' + error.message);
+      toast('Nota eliminada'); await loadAll(); render();
+    }
+  });
+}
+
+async function generarCobroServpro(id) {
+  const s = SERVPRO.find(x => x.id === id);
+  if (!s) return;
+  if (s.cobro_id) return toast('Este caso ya tiene un cobro vinculado');
+  const concepto = `${s.tipo_servicio || 'Servicio profesional'}${s.id_caso ? ' · caso ' + s.id_caso : ''}`;
+  const { data, error } = await sb.from('amazon_cobros').insert({
+    cliente_id: s.cliente_id, tipo: 'servicio', servicio_id: id, concepto, monto: s.precio || 0, created_by: ME.email
+  }).select().single();
+  if (error) return toast('Error: ' + error.message);
+  const { error: e2 } = await sb.from('amazon_servicios_pro').update({ cobro_id: data.id, estado_cobro: 'Facturado' }).eq('id', id);
+  if (e2) return toast('Error: ' + e2.message);
+  await eventoAudit('cobro_registrado', `Cobro generado desde servicio profesional: ${concepto}`, { cliente_id: s.cliente_id, cobro_id: data.id });
+  toast('Cobro generado — ve a 💵 Cobros para emitir el invoice');
+  await loadAll(); render();
+}
+
+/* ---------- RESUMEN (con widget Próximas acciones) ---------- */
+function vResumen() {
+  const mes = new Date().getMonth(), yr = new Date().getFullYear();
+  const cobrosMes = COBROS.filter(c => { const d = new Date(c.created_at); return d.getMonth() === mes && d.getFullYear() === yr; });
+  const pagadoMes = cobrosMes.filter(c => ['fondos_validados', 'pagado'].includes(c.estado)).reduce((a, c) => a + Number(c.monto), 0);
+  const pendiente = COBROS.filter(c => !['fondos_validados', 'pagado'].includes(c.estado)).reduce((a, c) => a + Number(c.monto), 0);
+  const invPorCobrar = INVOICES.filter(i => i.estado === 'por_cobrar').length;
+  const ult = COBROS.slice(0, 8);
+
+  const abiertos = SERVPRO.filter(s => !['Completado', 'Cancelado/Fallido'].includes(s.estado));
+  const porFacturar = SERVPRO.filter(s => (s.estado_cobro || 'Pendiente de facturar') === 'Pendiente de facturar').length;
+  const proximas = SERVPRO.filter(s => s.fecha_proxima_accion && !['Completado', 'Cancelado/Fallido'].includes(s.estado))
+    .filter(s => { const d = _spDiasProxima(s.fecha_proxima_accion); return d !== null && d <= 7; })
+    .sort((a, b) => new Date(a.fecha_proxima_accion) - new Date(b.fecha_proxima_accion));
+
+  const proximasHTML = proximas.length ? `
+  <div class="pg-card" style="background:#FFF8F0;border-color:#F0C36D">
+    <h2>⏰ Próximas acciones</h2><div class="h2sub">Casos vencidos o con vencimiento en los próximos 7 días.</div>
+    <div class="pg-tl">
+      ${proximas.map(s => `<div class="it"><span class="linkish" onclick="abrirServpro('${s.id}')">${esc(cliName(s.cliente_id))} · ${esc(s.tipo_servicio || '')}</span> — ${_spProximaHTML(s.fecha_proxima_accion)}<div class="w">${spPill(s.estado)}</div></div>`).join('')}
+    </div>
+  </div>` : '';
+
+  return `
+  <div class="pg-eyebrow">Dashboard operativo · Amazon Audit</div>
+  <h1>Amazon Relay</h1>
+  <div class="pg-sub">Trazabilidad de clientes, cobros semanales, tarifas e invoices.</div>
+  <div class="pg-card" style="background:#F2FBF8;border-color:var(--pg-mint)">
+    <h2>🧭 Guía rápida de registro</h2>
+    <div class="h2sub">Sigue este orden — pocos clics, sin pasos raros:</div>
+    <div style="font-size:12.8px;color:var(--pg-txt);line-height:2.1">
+      <b>1.</b> 👤 Clientes → "Registrar cliente" (empresa + DOT + contrato es lo mínimo).<br>
+      <b>2.</b> 📸 Cargar viaje → llena el load del cliente.<br>
+      <b>3.</b> 💵 Cobros → registra el pago semanal a debitar, avanza el estado con el botón →.<br>
+      <b>4.</b> En Cobros, botón 🧾 → genera el invoice automático, ya numerado.<br>
+      <b>5.</b> 🧩 Servicios Profesionales → para casos que NO son dispatching (recuperación de cuenta, fondos, Safer/FMCSA). Se cobra desde el caso cuando queda Completado.<br>
+      Hay un cliente <b>🧭 EJEMPLO GUÍA</b> ya armado de punta a punta en Clientes — ábrelo para ver cómo se ve todo lleno.
+    </div>
+  </div>
+  <div class="pg-kpis">
+    <div class="pg-kpi"><div class="lbl">Clientes activos</div><div class="val">${CLIENTES.filter(c => c.estado === 'activo').length}</div><div class="sub">${CLIENTES.length} en total</div></div>
+    <div class="pg-kpi"><div class="lbl">Cobrado este mes</div><div class="val">${fmt$(pagadoMes)}</div><div class="sub">${cobrosMes.length} cobros registrados</div></div>
+    <div class="pg-kpi"><div class="lbl">Pendiente por validar</div><div class="val">${fmt$(pendiente)}</div><div class="sub">en flujo con FAM</div></div>
+    <div class="pg-kpi"><div class="lbl">Invoices por cobrar</div><div class="val">${invPorCobrar}</div><div class="sub">${INVOICES.length} emitidos</div></div>
+    <div class="pg-kpi"><div class="lbl">Casos abiertos</div><div class="val">${abiertos.length}</div><div class="sub">${porFacturar} por facturar</div></div>
+  </div>
+  ${proximasHTML}
+  <div class="pg-card">
+    <h2>Últimos cobros</h2><div class="h2sub">Los más recientes en el flujo.</div>
+    <table class="pg-table"><thead><tr><th>Cliente</th><th>Concepto</th><th>Periodo</th><th style="text-align:right">Monto</th><th>Estado</th></tr></thead><tbody>
+    ${ult.map(c => `<tr><td><span class="linkish" onclick="abrirCliente('${c.cliente_id}')">${esc(cliName(c.cliente_id))}</span></td><td>${esc(c.concepto)}</td><td>${fmtD(c.periodo_desde)} → ${fmtD(c.periodo_hasta)}</td><td class="num" style="text-align:right">${fmt$(c.monto)}</td><td>${pill(c.estado)}</td></tr>`).join('') || '<tr><td colspan="5" style="color:var(--pg-muted)">Sin cobros aún — registra el primero en 💵 Cobros.</td></tr>'}
+    </tbody></table>
+  </div>`;
+}
+
+/* ---------- TARIFARIO (antes "Servicios à la carte") ---------- */
+function vServicios() {
+  return `
+  <div class="pg-eyebrow">Precios de referencia</div><h1>Tarifario</h1>
+  <div class="pg-sub">Tabla de precios de referencia. La gestión de casos vive en 🧩 Servicios Profesionales — esto solo son los valores.</div>
+  <div class="pg-card">
+    <table class="pg-table"><thead><tr><th>Servicio</th><th>Qué resuelve</th><th>Tipo</th><th>Precio</th><th>Máx (rango)</th><th></th></tr></thead><tbody>
+    ${SERVICIOS.map(s => `<tr style="${s.activo ? '' : 'opacity:.45'}">
+      <td style="font-weight:600;color:var(--pg-ink)">${esc(s.nombre)}</td>
+      <td style="font-size:12px;color:var(--pg-muted)">${esc(s.descripcion || '')}</td>
+      <td><span class="pg-pill ${s.tipo === 'Operativo' ? 'fin' : (s.tipo === 'Profesional' ? 'warn' : 'n')}">${esc(s.tipo)}</span>${(s.tipo || '').toLowerCase() === 'profesional' ? ' <span class="pg-pill n" title="Catálogo de casos en Servicios Profesionales">🧩</span>' : ''}</td>
+      <td class="svc-price"><input type="number" step="1" value="${s.precio}" id="sp_${s.id}"></td>
+      <td class="svc-price"><input type="number" step="1" value="${s.precio_max ?? ''}" id="sm_${s.id}" placeholder="—"></td>
+      <td style="white-space:nowrap"><button class="pg-btn sm mint" onclick="guardarServicio('${s.id}')">Guardar</button>
+      <button class="pg-btn sm secondary" onclick="toggleServicio('${s.id}',${!s.activo})">${s.activo ? 'Ocultar' : 'Activar'}</button></td></tr>`).join('')}
+    </tbody></table>
+  </div>
+  <div class="pg-card">
+    <h2>Nuevo servicio</h2>
+    <div class="frow">
+      <div class="field"><label>Nombre *</label><input id="nsNombre"></div>
+      <div class="field"><label>Qué resuelve</label><input id="nsDesc"></div>
+      <div class="field"><label>Tipo</label><select id="nsTipo"><option>Operativo</option><option value="Asesoria">Asesoría</option><option value="Profesional">Profesional</option></select></div>
+    </div>
+    <div class="frow">
+      <div class="field"><label>Precio ($)</label><input id="nsPrecio" type="number"></div>
+      <div class="field"><label>Precio máx (opcional)</label><input id="nsMax" type="number"></div>
+      <div class="field" style="display:flex;align-items:flex-end"><button class="pg-btn" onclick="crearServicio()">Agregar <span class="a">→</span></button></div>
+    </div>
+  </div>`;
+}
+
+/* ENTREGA: Modulo D completo — CRUD de Servicios Profesionales (lista con filtro por
+   estado, formulario sin campos logisticos, ficha del caso con bitacora y cambio rapido
+   de estado, conexion financiera Completado -> Generar cobro, sincronizacion de
+   estado_cobro a Pagado al abrir el caso). vResumen con widget "Proximas acciones" y KPI
+   "Casos abiertos". vServicios renombrado a Tarifario con marca visual de catalogo
+   Profesional.
+   Funciones declaradas: vServpro, vServproDetalle, abrirServpro, crearServpro,
+   editarServpro, eliminarServpro, spTipoChange, agregarNotaServpro, eliminarNotaServpro,
+   generarCobroServpro, vResumen, vServicios.
+   TODO: la sincronizacion de estado_cobro a 'Pagado' al abrir el caso queda en try/catch
+   silencioso si falla por RLS; el detalle igual muestra el estado derivado en pantalla.
+   Supuesto: el catalogo profesional (SERVICIOS tipo='Profesional') guarda el precio
+   sugerido; tipo_servicio en amazon_servicios_pro se guarda como texto libre (nombre del
+   servicio o el texto de "Otro"), no como FK al catalogo. */
+
+
+/* ---------- 50-invoices.js ---------- */
+/* ==================================================================
+   AMAZON RELAY v4 · MÓDULO E — INVOICES (CRUD, optimización F.1)
+   Declara: vInvoices, rowInvoice, editarInvoice, guardarInvoice, eliminarInvoice
+   NO toca crearInvoice / imprimirInvoice / marcarPagado / invoiceDesdeCobro (v3).
+   ================================================================== */
+
+/* ---------- fila de invoice (usada en Invoices del cliente, sin columna Cliente) ---------- */
+function rowInvoice(i) {
+  const cob = COBROS.find(x => x.id === i.cobro_id);
+  const concepto = cob ? esc(cob.concepto || '') : 'invoice suelto';
+  return `<tr><td class="num">${esc(i.numero)}<div style="font-size:10.5px;color:var(--pg-muted);margin-top:2px">${concepto}</div></td><td>${fmtD(i.fecha)}</td><td class="num" style="text-align:right">${fmt$(i.total)}</td><td>${pill(i.estado)}</td>
+  <td style="white-space:nowrap"><button class="pg-btn sm secondary" onclick="imprimirInvoice('${i.id}')">🖨 Ver / PDF</button>
+  ${i.estado === 'por_cobrar' ? `<button class="pg-btn sm mint" onclick="marcarPagado('${i.id}')">Pagado ✓</button>` : ''}
+  <button class="pg-actbtn" title="Editar" onclick="editarInvoice('${i.id}')">✏️</button>
+  <button class="pg-actbtn" title="Eliminar" onclick="eliminarInvoice('${i.id}')">🗑️</button></td></tr>`;
+}
+
+/* ---------- vista principal ---------- */
+function vInvoices() {
+  const editando = EDIT.invoice ? INVOICES.find(x => x.id === EDIT.invoice) : null;
+
+  const filasLista = INVOICES.map(i => {
+    const cob = COBROS.find(x => x.id === i.cobro_id);
+    const concepto = cob ? esc(cob.concepto || '') : 'invoice suelto';
+    return `<tr><td class="num">${esc(i.numero)}<div style="font-size:10.5px;color:var(--pg-muted);margin-top:2px">${concepto}</div></td>
+    <td><span class="linkish" onclick="abrirCliente('${i.cliente_id}')">${esc(cliName(i.cliente_id))}</span></td>
+    <td>${fmtD(i.fecha)}</td><td class="num" style="text-align:right">${fmt$(i.total)}</td><td>${pill(i.estado)}</td>
+    <td style="white-space:nowrap"><button class="pg-btn sm secondary" onclick="imprimirInvoice('${i.id}')">🖨</button>
+    ${i.estado === 'por_cobrar' ? `<button class="pg-btn sm mint" onclick="marcarPagado('${i.id}')">✓</button>` : ''}
+    <button class="pg-actbtn" title="Editar" onclick="editarInvoice('${i.id}')">✏️</button>
+    <button class="pg-actbtn" title="Eliminar" onclick="eliminarInvoice('${i.id}')">🗑️</button></td></tr>`;
+  }).join('') || '<tr><td colspan="6" style="color:var(--pg-muted)">Sin invoices aún.</td></tr>';
+
+  let panelDerecho;
+  if (editando) {
+    const it0 = (editando.items && editando.items[0]) || {};
+    panelDerecho = `
+      ${editBar('invoice', editando.numero)}
+      <h2>Editar invoice ${esc(editando.numero)}</h2>
+      <div class="h2sub">// TODO: solo se edita el primer item del invoice (los invoices reales tienen uno solo).</div>
+      <div class="frow">
+        <div class="field"><label>Fecha</label><input id="ivEFecha" type="date" value="${esc((editando.fecha || '').slice(0, 10))}"></div>
+        <div class="field"><label>Método de pago</label><input id="ivEMetodo" value="${esc(editando.metodo_pago || '')}" placeholder="Zelle / Card / ACH"></div>
+      </div>
+      <div class="field"><label>Estado</label><select id="ivEEstado">
+        ${['por_cobrar', 'pagado', 'anulado'].map(e => `<option value="${e}" ${editando.estado === e ? 'selected' : ''}>${esc(ESTADO_LBL[e] || e)}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Descripción del servicio *</label><textarea id="ivEDesc" rows="2">${esc(it0.descripcion || '')}</textarea></div>
+      <div class="frow">
+        <div class="field"><label>Cantidad</label><input id="ivEQty" type="number" value="${esc(it0.qty ?? 1)}"></div>
+        <div class="field"><label>Unit Rate ($)</label><input id="ivERate" type="number" step="0.01" value="${esc(it0.rate ?? '')}"></div>
+      </div>
+      <div class="field"><label><input type="checkbox" id="ivEFee" style="width:auto;margin-right:6px" ${Number(editando.fee_pct) > 0 ? 'checked' : ''}>Aplicar Administrative Processing Fee 3.9% (plataforma de pago)</label></div>
+      <button class="pg-btn" onclick="guardarInvoice()">Guardar cambios <span class="a">→</span></button>`;
+  } else {
+    panelDerecho = `
+      <h2>Invoice suelto</h2><div class="h2sub"><b>Uso normal:</b> botón 🧾 en la lista de Cobros — se genera solo, sin llenar nada. Usa este formulario SOLO si necesitas un invoice sin un cobro registrado.</div>
+      <div class="field"><label>Cliente *</label><select id="ivCliente">${CLIENTES.map(c => `<option value="${c.id}">${esGuia(c) ? '🧭 ' : ''}${esc(c.empresa)}</option>`).join('')}</select></div>
+      <div class="field"><label>Descripción del servicio *</label><textarea id="ivDesc" rows="2" placeholder="Compliance Management Service / Operational Rescue: Amazon Relay/Business Recovery"></textarea></div>
+      <div class="frow">
+        <div class="field"><label>Cantidad</label><input id="ivQty" type="number" value="1"></div>
+        <div class="field"><label>Unit Rate ($)</label><input id="ivRate" type="number" step="0.01"></div>
+        <div class="field"><label>Método de pago</label><input id="ivMetodo" placeholder="Zelle / Card / ACH"></div>
+      </div>
+      <div class="field"><label><input type="checkbox" id="ivFee" style="width:auto;margin-right:6px">Aplicar Administrative Processing Fee 3.9% (plataforma de pago)</label></div>
+      <button class="pg-btn" onclick="crearInvoice()">Generar invoice <span class="a">→</span></button>`;
+  }
+
+  return `
+  <div class="pg-eyebrow">Facturación</div><h1>Invoices</h1>
+  <div class="pg-sub">Numeración automática OP-${new Date().getFullYear()}-### · plantilla oficial Operyx x ProtectGo.</div>
+  <div class="two">
+    <div class="pg-card">
+      <h2>Invoices emitidos</h2>
+      <table class="pg-table"><thead><tr><th>Número</th><th>Cliente</th><th>Fecha</th><th style="text-align:right">Total</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${filasLista}
+      </tbody></table>
+    </div>
+    <div class="pg-card">
+      ${panelDerecho}
+    </div>
+  </div>`;
+}
+
+/* ---------- editar ---------- */
+function editarInvoice(id) {
+  EDIT.invoice = id;
+  render();
+}
+
+async function guardarInvoice() {
+  const id = EDIT.invoice;
+  const i = INVOICES.find(x => x.id === id);
+  if (!i) return toast('No se encontró el invoice');
+  const fecha = $('ivEFecha').value || i.fecha;
+  const metodo_pago = $('ivEMetodo').value.trim() || null;
+  const estado = $('ivEEstado').value;
+  const desc = $('ivEDesc').value.trim();
+  const qty = parseFloat($('ivEQty').value) || 1;
+  const rate = parseFloat($('ivERate').value) || 0;
+  const conFee = $('ivEFee').checked;
+  if (!desc || !rate) return toast('Falta descripción o tarifa');
+
+  const subtotal = qty * rate;
+  const fee_pct = conFee ? 3.9 : 0;
+  const fee = conFee ? Math.round(subtotal * 0.039 * 100) / 100 : 0;
+  const items = [{ descripcion: desc, qty, rate, total: subtotal }]; // TODO: solo se edita el primer item
+  if (conFee) items.push({ descripcion: 'Administrative Processing Fee: Applicable for the use of the payment platform (3.9%).', qty: 1, rate: fee, total: fee });
+  const total = subtotal + fee;
+
+  const { error } = await sb.from('amazon_invoices').update({ fecha, metodo_pago, estado, items, subtotal, fee_pct, fee, total }).eq('id', id);
+  if (error) return toast('Error: ' + error.message);
+
+  await eventoAudit('editado', `Invoice ${i.numero} editado · total ${fmt$(total)}`, { cliente_id: i.cliente_id, invoice_id: id });
+  toast('Invoice actualizado');
+  EDIT.invoice = null;
+  await loadAll(); render();
+}
+
+/* ---------- eliminar ---------- */
+function eliminarInvoice(id) {
+  const i = INVOICES.find(x => x.id === id);
+  if (!i) return;
+  const guia = esGuia(cli(i.cliente_id));
+  pgConfirm({
+    titulo: 'Eliminar invoice',
+    cuerpo: `Vas a eliminar el invoice <b>${esc(i.numero)}</b> de <b>${esc(cliName(i.cliente_id))}</b> por <b>${fmt$(i.total)}</b>.`,
+    aviso: (i.cobro_id
+      ? 'Este invoice está vinculado a un cobro. El cobro <b>NO</b> se borra, solo queda sin invoice asociado. '
+      : '') + 'La numeración OP-### no se reutiliza.',
+    guia: guia ? 'Es el ejemplo guía del sistema — sirve de referencia para el equipo.' : null,
+    textoBoton: 'Sí, eliminar invoice',
+    peligro: true,
+    onOk: async () => {
+      // liberar dosieres que apuntan a este invoice para no romper el FK
+      await sb.from('amazon_dosieres').update({ invoice_id: null }).eq('invoice_id', id);
+      await eventoAudit('eliminado', `Invoice ${i.numero} eliminado (${fmt$(i.total)} total)`, { cliente_id: i.cliente_id });
+      const { error } = await sb.from('amazon_invoices').delete().eq('id', id);
+      if (error) return toast('Error: ' + error.message);
+      toast('Invoice eliminado');
+      await loadAll(); render();
+    }
+  });
+}
+
+/* ENTREGA: vInvoices/rowInvoice muestran el concepto del cobro vinculado bajo el número
+   y agregan ✏️/🗑️ en ambas tablas (lista general y detalle de cliente). editarInvoice
+   activa modo edición (fecha, método, estado, descripción/cantidad/rate del primer item,
+   fee 3.9%) en la tarjeta derecha con editBar; guardarInvoice recalcula subtotal/fee/total
+   y hace update + eventoAudit. eliminarInvoice usa pgConfirm siempre, libera amazon_dosieres
+   con ese invoice_id antes de borrar, registra eventoAudit sin invoice_id (se va a borrar) y
+   respeta el aviso de ejemplo guía sin bloquear el borrado.
+   TODO: guardarInvoice solo edita el primer item de items[] (asumido: 1 item por invoice real).
+   Supuesto: columna amazon_dosieres.invoice_id existe (usada ya en index.html línea 572). */
+
+
 </script>
 </body>
 </html>
