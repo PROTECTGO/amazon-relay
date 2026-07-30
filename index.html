@@ -981,10 +981,11 @@ function nav(v) {
   document.head.appendChild(st);
 })();
 
-var _pgOnOk = null;
+var _pgOnOk = null; var _pgOnOk2 = null;
 function pgConfirm(o) {
   o = o || {};
   _pgOnOk = o.onOk || null;
+  _pgOnOk2 = o.onOk2 || null;
   var ov = document.getElementById('pgmOv');
   if (ov) ov.remove();
   ov = document.createElement('div');
@@ -998,6 +999,7 @@ function pgConfirm(o) {
     '<div class="pgm-actions">' +
     '<button class="pgm-btn cancel" type="button" onclick="pgCerrarModal()">' + (o.textoCancelar || 'Cancelar') + '</button>' +
     (o.onOk ? '<button class="pgm-btn ' + (o.peligro === false ? 'ok' : 'danger') + '" type="button" id="pgmOk">' + (o.textoBoton || 'Sí, eliminar') + '</button>' : '') +
+    (o.onOk2 ? '<button class="pgm-btn danger" type="button" id="pgmOk2">' + (o.textoBoton2 || 'Eliminar del todo') + '</button>' : '') +
     '</div></div>';
   document.body.appendChild(ov);
   ov.addEventListener('click', function (e) { if (e.target === ov) pgCerrarModal(); });
@@ -1007,8 +1009,14 @@ function pgConfirm(o) {
     try { if (_pgOnOk) await _pgOnOk(); } catch (err) { toast('Error: ' + (err.message || err)); }
     pgCerrarModal();
   });
+  var btn2 = document.getElementById('pgmOk2');
+  if (btn2) btn2.addEventListener('click', async function () {
+    btn2.disabled = true; btn2.textContent = 'Procesando…';
+    try { if (_pgOnOk2) await _pgOnOk2(); } catch (err) { toast('Error: ' + (err.message || err)); }
+    pgCerrarModal();
+  });
 }
-function pgCerrarModal() { _pgOnOk = null; var ov = document.getElementById('pgmOv'); if (ov) ov.remove(); }
+function pgCerrarModal() { _pgOnOk = null; _pgOnOk2 = null; var ov = document.getElementById('pgmOv'); if (ov) ov.remove(); }
 function pgConfirmChecked(id) { var el = document.getElementById(id); return !!(el && el.checked); }
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pgCerrarModal(); });
 
@@ -1191,12 +1199,10 @@ function vClientes() {
         <div style="margin-top:6px"><button class="pg-preset" type="button" onclick="presetEsquema('n3')">Nivel 3 · 9%</button></div>
       </div>
       <div id="blkPiso" class="field ${tipo0 !== 'porcentaje_piso' ? 'hidden' : ''}">
-        <div class="frow2">
-          <div class="field"><label>Piso por unidad $</label><input id="ncPiso" type="number" step="0.01" value="${editC && editC.esquema_piso ? editC.esquema_piso : ''}" oninput="esquemaTipoChange()"></div>
-          <div class="field"><label># Camiones activos</label><input id="ncUnidades" type="number" value="${editC && editC.unidades_activas ? editC.unidades_activas : 1}" oninput="esquemaTipoChange()"></div>
-        </div>
+        <div class="field"><label>Piso por unidad $</label><input id="ncPiso" type="number" step="0.01" value="${editC && editC.esquema_piso ? editC.esquema_piso : ''}" oninput="esquemaTipoChange()"></div>
         <button class="pg-preset" type="button" onclick="presetEsquema('n3piso')">Nivel 3 · 9% con piso $100/unidad</button>
       </div>
+      <div class="field"><label># Camiones activos <span style="font-weight:400;text-transform:none">(unidades del cliente — siempre se guarda)</span></label><input id="ncUnidades" type="number" min="1" value="${editC && editC.unidades_activas ? editC.unidades_activas : 1}" oninput="esquemaTipoChange()"></div>
       <div class="pg-desglose" id="ncDesglose">${desglose0}</div>
 
       <div class="field" style="margin-top:8px"><label>Notas <span style="font-weight:400;text-transform:none">(opcional)</span></label><textarea id="ncNotas" rows="2">${editC ? esc(editC.notas || '') : ''}</textarea></div>
@@ -1236,7 +1242,7 @@ async function crearCliente() {
     esquema_tipo: tipo,
     esquema_pct: (tipo === 'porcentaje' || tipo === 'porcentaje_piso') ? (parseFloat($('ncPct').value) || 0) : null,
     esquema_piso: tipo === 'porcentaje_piso' ? (parseFloat($('ncPiso').value) || 0) : null,
-    unidades_activas: tipo === 'porcentaje_piso' ? (parseInt($('ncUnidades').value, 10) || 1) : null,
+    unidades_activas: parseInt(($('ncUnidades') && $('ncUnidades').value) || '1', 10) || 1,
     tarifa_semanal: tipo === 'fija' ? (parseFloat($('ncTarifa').value) || 0) : null
   };
   const editId = EDIT.cliente;
@@ -1271,13 +1277,25 @@ async function eliminarCliente(id) {
     if (invN) partes.push(`${invN} invoice${invN === 1 ? '' : 's'}`);
     if (spN) partes.push(`${spN} servicio${spN === 1 ? '' : 's'} profesional${spN === 1 ? '' : 'es'}`);
     pgConfirm({
-      titulo: 'Inactivar cliente', peligro: false, textoBoton: 'Inactivar cliente', guia,
-      cuerpo: `<b>${esc(c.empresa)}</b> tiene ${partes.join(', ')} vinculados. No se puede eliminar del todo — se marcará como <b>inactivo</b> y sigue visible en el libro de clientes.`,
+      titulo: 'Cliente con historial', peligro: false, textoBoton: 'Inactivar (recomendado)', guia,
+      cuerpo: `<b>${esc(c.empresa)}</b> tiene ${partes.join(', ')} vinculados. <b>Inactivar</b> lo oculta de los formularios pero conserva toda su historia. <b>Eliminar del todo</b> lo borra a él y TODO lo suyo (${partes.join(', ')}, repartos y su trazabilidad) — no se puede deshacer.`,
       onOk: async () => {
         const { error } = await sb.from('amazon_clientes').update({ estado: 'inactivo' }).eq('id', id);
         if (error) return toast('Error: ' + error.message);
         await eventoAudit('editado', 'Cliente inactivado: ' + c.empresa, { cliente_id: id });
         toast('Cliente inactivado'); await loadAll(); render();
+      },
+      textoBoton2: 'Eliminar del todo',
+      onOk2: async () => {
+        const resumen = partes.join(', ');
+        let r;
+        r = await sb.from('amazon_invoices').delete().eq('cliente_id', id); if (r.error) return toast('Error borrando invoices: ' + r.error.message);
+        r = await sb.from('amazon_cobros').delete().eq('cliente_id', id); if (r.error) return toast('Error borrando cobros: ' + r.error.message);
+        r = await sb.from('amazon_loads').delete().eq('cliente_id', id); if (r.error) return toast('Error borrando viajes: ' + r.error.message);
+        r = await sb.from('amazon_dosieres').delete().eq('cliente_id', id); if (r.error) return toast('Error borrando dosieres: ' + r.error.message);
+        r = await sb.from('amazon_clientes').delete().eq('id', id); if (r.error) return toast('Error: ' + r.error.message);
+        await eventoAudit('eliminado', 'Cliente eliminado del todo: ' + c.empresa + ' (incluía ' + resumen + ')', {});
+        DETALLE = null; toast('Cliente y todo su historial eliminados'); await loadAll(); render();
       }
     });
   } else {
