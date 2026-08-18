@@ -169,9 +169,10 @@ body{margin:0;background:var(--pg-bg);color:var(--pg-txt);font-family:var(--pg-f
 <div id="printArea"></div>
 
 <script>
-const SB_URL='https://bwqzypuiqgxzsrtsueab.supabase.co';
-const SB_KEY='sb_publishable_VbA94M3mF-Z6kgtPnda-cQ_diKF8L49';
-const sb=window.supabase.createClient(SB_URL,SB_KEY);
+// Consolidacion (Fase 3): Amazon Relay contra GABI (hivpq); tablas amazon_ en schema portal.
+const SB_URL='https://hivpqsepwsfmafamxkzy.supabase.co';
+const SB_KEY='sb_publishable_Kak00GbGVt2K3yGh6IBZvw_99IybVvt';
+const sb=window.supabase.createClient(SB_URL,SB_KEY,{db:{schema:'portal'}});
 let ME=null, CLIENTES=[], SERVICIOS=[], COBROS=[], INVOICES=[], LOADS=[], REGLAS=[], REPARTOS=[], DIRECTORIO=null, VIEW='resumen', DETALLE=null, REP_PERIODO='mes';
 
 const $=id=>document.getElementById(id);
